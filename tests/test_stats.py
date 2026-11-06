@@ -1,6 +1,7 @@
 """Contract tests for GET /stats + POST /stats/reset (UI plan U-1).
 
-Uses in-memory StatsStore (no Redis required) + FastAPI TestClient.
+Uses an in-memory/memory-mode StatsStore (no Redis required) + FastAPI
+TestClient, with fake embedder/ollama injected so no model is loaded.
 """
 import sys
 from pathlib import Path
@@ -13,16 +14,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from llm_cache.app import create_app
 from llm_cache.config import Settings
 from llm_cache.store import StatsStore
+from tests.conftest import FakeEmbedder, FakeOllama
 
 
 @pytest.fixture()
 def store():
-    return StatsStore()  # no redis_url -> in-memory
+    # unreachable redis_url -> ping fails -> in-memory stats backend (docs/ui-plan.md)
+    return StatsStore(settings=Settings(redis_url="redis://localhost:6390/0"))
 
 
 @pytest.fixture()
 def client(store):
-    app = create_app(Settings(), store)
+    app = create_app(Settings(redis_url="redis://localhost:6390/0"), store,
+                     embedder=FakeEmbedder(), ollama=FakeOllama())
     return TestClient(app)
 
 
@@ -43,11 +47,11 @@ def test_stats_contract_empty(client):
 
 
 def test_record_then_stats(client, store):
-    store.record_event("exact-hit", "llama3.2:3b", similarity=0.01, threshold=0.10,
+    store.record_event("exact-hit", model="llama3.2:3b", similarity=0.01, threshold=0.10,
                        latency_ms=9, embed_ms=2, redis_ms=1, prompt_preview="What is Redis?")
-    store.record_event("semantic-hit", "llama3.2:3b", similarity=0.04, threshold=0.10,
+    store.record_event("semantic-hit", model="llama3.2:3b", similarity=0.04, threshold=0.10,
                        latency_ms=12, embed_ms=3, redis_ms=1, prompt_preview="what is redis??")
-    store.record_event("miss", "llama3.2:3b", similarity=None, threshold=0.10,
+    store.record_event("miss", model="llama3.2:3b", similarity=None, threshold=0.10,
                        latency_ms=9800, embed_ms=21, redis_ms=2, prompt_preview="Explain TCP?")
     r = client.get("/stats")
     assert r.status_code == 200, r.text
@@ -69,7 +73,7 @@ def test_record_then_stats(client, store):
 
 
 def test_reset_zeroes(client, store):
-    store.record_event("miss", "llama3.2:3b", latency_ms=100)
+    store.record_event("miss", model="llama3.2:3b", latency_ms=100)
     assert client.get("/stats").json()["totals"]["requests"] == 1
     r = client.post("/stats/reset")
     assert r.status_code == 200, r.text

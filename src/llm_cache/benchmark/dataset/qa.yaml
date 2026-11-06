@@ -1,0 +1,100 @@
+# Benchmark prompt set: single-turn technical Q&A.
+# 10 topics x (1 original + 3 rephrasings) + 10 distractor questions.
+# All answers are stable facts -> rephrasings should be cacheable, distractors
+# should never hit the cache (any distractor hit is a *false positive*).
+model: llama3.2:3b
+system: "You are a terse technical assistant. Answer in one or two sentences."
+temperature: 0
+
+topics:
+  - id: redis
+    original: "What is Redis?"
+    paraphrases:
+      - "Can you explain what Redis is?"
+      - "Give me a short description of Redis."
+      - "What does Redis do?"
+
+  - id: docker
+    original: "What is Docker?"
+    paraphrases:
+      - "Explain what Docker is in simple terms."
+      - "Briefly, what does Docker do?"
+      - "What is the purpose of Docker?"
+
+  - id: tcp
+    original: "What is TCP?"
+    paraphrases:
+      - "Can you tell me what TCP stands for and does?"
+      - "Explain the TCP protocol briefly."
+      - "What is the role of TCP in networking?"
+
+  - id: python-gil
+    original: "What is the GIL in Python?"
+    paraphrases:
+      - "Explain what Python's GIL is."
+      - "What does the GIL do in Python?"
+      - "Why does Python have a GIL?"
+
+  - id: db-index
+    original: "What is a database index?"
+    paraphrases:
+      - "Explain what a database index is used for."
+      - "Why do databases use indexes?"
+      - "What is the purpose of an index in a database?"
+
+  - id: http-stateless
+    original: "Why is HTTP called stateless?"
+    paraphrases:
+      - "What does it mean that HTTP is stateless?"
+      - "Explain why HTTP is a stateless protocol."
+      - "In what sense is HTTP stateless?"
+
+  - id: vector-db
+    original: "What is a vector database?"
+    paraphrases:
+      - "Explain what a vector database is."
+      - "What is the purpose of a vector database?"
+      - "How would you describe a vector database?"
+
+  - id: caching
+    original: "What is a cache in computing?"
+    paraphrases:
+      - "Explain what caching means in computing."
+      - "What is the purpose of a cache?"
+      - "How does a cache work?"
+
+  - id: embeddings
+    original: "What is an embedding in machine learning?"
+    paraphrases:
+      - "Explain what embeddings are in machine learning."
+      - "What is the role of an embedding in ML?"
+      - "How would you describe an ML embedding?"
+
+  - id: quantization
+    original: "What is model quantization?"
+    paraphrases:
+      - "Explain what quantization means for ML models."
+      - "Why do people quantize models?"
+      - "What is the purpose of model quantization?"
+
+distractors:
+  - id: water-boiling
+    prompt: "What is the boiling point of water at sea level in Celsius?"
+  - id: australia-capital
+    prompt: "What is the capital of Australia?"
+  - id: leap-year
+    prompt: "How many days are in a leap year?"
+  - id: speed-of-light
+    prompt: "What is the speed of light in vacuum?"
+  - id: multiply
+    prompt: "What is 17 times 23?"
+  - id: hamlet
+    prompt: "Who wrote the play Hamlet?"
+  - id: ww2-end
+    prompt: "In what year did the Second World War end?"
+  - id: gold-symbol
+    prompt: "What is the chemical symbol for gold?"
+  - id: spider-legs
+    prompt: "How many legs does a spider have?"
+  - id: largest-planet
+    prompt: "Which planet in our solar system is the largest?"

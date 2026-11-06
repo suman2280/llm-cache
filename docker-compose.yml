@@ -1,32 +1,26 @@
+# Redis is the only containerized component for the MVP path.
+# Redis 8 Open Source ships vector search (FT.* / VECTOR_RANGE) in the base
+# image, so redis-stack is not required.
+#
+#   docker compose up -d redis
+#   uv sync && uv run uvicorn llm_cache.app:app --port 8000
+#
+# Ollama runs natively on the host (http://localhost:11434) so the model stays
+# resident in host RAM between proxy restarts.
 services:
   redis:
     image: redis:8
     container_name: llm-cache-redis
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
     ports:
       - "6379:6379"
-    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     volumes:
       - redis-data:/data
-
-  # Optional containerized proxy profile (not started by default):
-  #   docker compose --profile proxy up
-  proxy:
-    image: python:3.12-slim
-    profiles: ["proxy"]
-    working_dir: /app
-    command: >
-      bash -lc "pip install -q -e . && uvicorn llm_cache.app:app --host 0.0.0.0 --port 8000"
-    ports:
-      - "8000:8000"
-    environment:
-      LLM_CACHE_REDIS_URL: redis://redis:6379/0
-      LLM_CACHE_OLLAMA_BASE_URL: http://host.docker.internal:11434
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - .:/app
-    depends_on:
-      - redis
 
 volumes:
   redis-data:
