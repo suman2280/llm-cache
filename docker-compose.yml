@@ -1,0 +1,32 @@
+services:
+  redis:
+    image: redis:8
+    container_name: llm-cache-redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+
+  # Optional containerized proxy profile (not started by default):
+  #   docker compose --profile proxy up
+  proxy:
+    image: python:3.12-slim
+    profiles: ["proxy"]
+    working_dir: /app
+    command: >
+      bash -lc "pip install -q -e . && uvicorn llm_cache.app:app --host 0.0.0.0 --port 8000"
+    ports:
+      - "8000:8000"
+    environment:
+      LLM_CACHE_REDIS_URL: redis://redis:6379/0
+      LLM_CACHE_OLLAMA_BASE_URL: http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - .:/app
+    depends_on:
+      - redis
+
+volumes:
+  redis-data:

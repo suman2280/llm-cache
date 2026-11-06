@@ -1,0 +1,34 @@
+[project]
+name = "llm-cache"
+version = "0.1.0"
+description = "Minimal offline OpenAI-compatible caching proxy (exact + semantic) in front of llama3.2:3b"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "redis>=5.0",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+embedding = [
+    # Phase 3: MiniLM in-process embedder (torch, heavy — not needed for UI phase)
+    "sentence-transformers>=3.0",
+]
+dev = [
+    "pytest>=8.0",
+    "fakeredis>=2.0",
+    "ruff>=0.4",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

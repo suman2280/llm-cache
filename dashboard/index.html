@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>llm-cache — dashboard</title>
+  <meta name="description" content="Live evidence of the llm-cache proxy claim: counters, latency percentiles, and recent cache events." />
+  <link rel="stylesheet" href="/dashboard/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-name">llm-cache</span>
+      <span id="live-chip" class="chip chip-live" title="Dashboard connection state">● live</span>
+    </div>
+    <div id="config-strip" class="config-strip" role="status" aria-label="Service configuration">
+      <span id="cfg-model">model: —</span>
+      <span id="cfg-embedder">embedder: —</span>
+      <span id="cfg-thresh">thresh: —</span>
+      <span id="cfg-uptime">uptime: —</span>
+      <span id="cfg-version">v—</span>
+    </div>
+  </header>
+
+  <div id="stale-banner" class="stale-banner" role="alert" hidden>
+    <span id="stale-text">/stats unreachable — showing last data</span>
+  </div>
+
+  <main class="layout">
+    <section aria-label="Counters" class="panel">
+      <div class="kpis" aria-live="polite">
+        <div class="kpi"><span class="kpi-label">Requests</span><span class="kpi-value" id="kpi-requests">0</span></div>
+        <div class="kpi"><span class="kpi-label">Hit rate</span><span class="kpi-value" id="kpi-hits">—</span></div>
+        <div class="kpi"><span class="kpi-label">Exact hits</span><span class="kpi-value" id="kpi-exact">0</span></div>
+        <div class="kpi"><span class="kpi-label">Semantic hits</span><span class="kpi-value" id="kpi-semantic">0</span></div>
+        <div class="kpi"><span class="kpi-label">Misses</span><span class="kpi-value" id="kpi-misses">0</span></div>
+        <div class="kpi"><span class="kpi-label">Bypasses</span><span class="kpi-value" id="kpi-bypasses">0</span></div>
+        <div class="kpi"><span class="kpi-label">Errors</span><span class="kpi-value" id="kpi-errors">0</span></div>
+        <div class="kpi"><span class="kpi-label">Inferences avoided</span><span class="kpi-value" id="kpi-avoided">0</span></div>
+      </div>
+    </section>
+
+    <section aria-label="Latency" class="panel">
+      <h2 class="panel-title">Cache-hit latency <span class="panel-sub">(last 100 events)</span></h2>
+      <dl class="latency-row">
+        <div><dt>p50</dt><dd id="lat-p50">—</dd></div>
+        <div><dt>p90</dt><dd id="lat-p90">—</dd></div>
+        <div><dt>p95</dt><dd id="lat-p95">—</dd></div>
+        <div><dt>p99</dt><dd id="lat-p99">—</dd></div>
+        <div><dt>max</dt><dd id="lat-max">—</dd></div>
+        <div><dt>n</dt><dd id="lat-n">0</dd></div>
+      </dl>
+    </section>
+
+    <section aria-label="Recent events" class="panel">
+      <div class="panel-head">
+        <h2 class="panel-title">Recent events</h2>
+        <span class="panel-sub">newest first · updated <time id="updated-at">—</time></span>
+      </div>
+      <p id="empty-state" class="empty-state">
+        No requests yet — send a chat completion, see
+        <a href="/docs/plan.md">plan.md §7</a>.
+      </p>
+      <table id="events-table" class="events-table" hidden>
+        <caption>Recent cache events (newest 100, newest first)</caption>
+        <thead>
+          <tr>
+            <th scope="col">Time</th>
+            <th scope="col">Status</th>
+            <th scope="col">Distance</th>
+            <th scope="col">Latency</th>
+            <th scope="col">Breakdown</th>
+            <th scope="col">Prompt</th>
+          </tr>
+        </thead>
+        <tbody id="events-body"></tbody>
+      </table>
+    </section>
+
+    <footer class="footer">
+      <span>llm-cache · offline · no external requests · </span>
+      <a href="/">API root</a><span> · </span>
+      <a href="/stats">/stats JSON</a><span> · </span>
+      <a href="/healthz">/healthz</a>
+    </footer>
+  </main>
+
+  <script type="module" src="/dashboard/app.js"></script>
+</body>
+</html>
