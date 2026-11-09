@@ -44,14 +44,17 @@ def test_index_creation_and_purge(store):
     store.reset_stats()
     stats = store.get_stats()
     assert stats["totals"]["requests"] == 0
-    assert stats["schema_version"] == 1
+    assert stats["schema_version"] == 2
 
 
 def test_record_event_and_stats(store):
     store.reset_stats()
-    store.record_event("miss", 5000.0, model="llama3.2:3b", prompt_preview="What is Redis?")
-    store.record_event("semantic-hit", 15.0, model="llama3.2:3b", similarity=0.03)
-    store.record_event("bypass", 3000.0, model="llama3.2:3b", reason="tools")
+    store.record_event("miss", 5000.0, model="llama3.2:3b", prompt="What is Redis?",
+                       response="Redis is an in-memory data store.")
+    store.record_event("semantic-hit", 15.0, model="llama3.2:3b", similarity=0.03,
+                       prompt="what is redis??", response="Redis is an in-memory data store.")
+    store.record_event("bypass", 3000.0, model="llama3.2:3b", reason="tools",
+                       prompt="tool request", response=None)
     stats = store.get_stats()
     assert stats["totals"]["requests"] == 3
     assert stats["totals"]["misses"] == 1
@@ -60,6 +63,16 @@ def test_record_event_and_stats(store):
     assert stats["totals"]["cache_hit_rate"] == round(1 / 3, 4)
     assert stats["latency_ms"]["n"] == 3
     assert len(stats["recent"]) == 3
+    # contract v2: monotonic ids + full text; bypass carries no response
+    ids = [e["id"] for e in stats["recent"]]
+    assert ids == sorted(ids, reverse=True)
+    assert all(isinstance(i, int) and i > 0 for i in ids)
+    assert stats["recent"][0]["reason"] == "tools"
+    assert stats["recent"][0]["response"] is None
+    # ids survive reset_stats() (dashboard reconciliation invariant)
+    store.reset_stats()
+    store.record_event("miss", 10.0, model="llama3.2:3b", prompt="after reset")
+    assert store.get_stats()["recent"][0]["id"] > max(ids)
     store.reset_stats()
 
 

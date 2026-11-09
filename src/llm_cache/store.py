@@ -14,8 +14,16 @@ Stats
 -----
 - Hash  ``stats:counters``  — HINCRBY counters.
 - List  ``stats:events``    — LPUSH/LTRIM ring of the last N events (JSON).
-Both are flushed by POST /stats/reset; the ring keeps percentiles honest by
-being labelled "last N events" in the API and any UI (docs/ui-plan.md §3).
+- Key   ``stats:event_seq`` — INCR source of monotonic event ids.
+
+Contract v2 (``schema_version: 2``): each event carries ``id`` (monotonic;
+clients key reconciliation on it), the **full** last-user message
+(``prompt``) and the **full** answer text (``response``; null on
+bypass/error). Both are flushed by POST /stats/reset — but the event
+sequence deliberately survives resets: ids must stay unique across resets
+or a dashboard reconciling rows by id breaks (docs/validation.md G-notes).
+The ring keeps percentiles honest by being labelled "last N events" in
+the API and any UI (docs/ui-plan.md §3).
 """
 
 from __future__ import annotations
@@ -98,6 +106,8 @@ class RedisCache:
             "errors": 0,
         }
         self._mem_events: list[dict[str, Any]] = []
+        # Monotonic event-id source; survives reset_stats() on purpose.
+        self._mem_seq = 0
 
         if client is None:
             client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
@@ -116,6 +126,8 @@ class RedisCache:
     def _mem_record(self, status: str, event: dict[str, Any]) -> None:
         self._mem_counters["requests"] += 1
         self._mem_counters[_counter_field(status)] += 1
+        self._mem_seq += 1
+        event["id"] = self._mem_seq
         self._mem_events.insert(0, event)
         del self._mem_events[self._event_limit:]
 
@@ -276,9 +288,17 @@ class RedisCache:
         threshold: float | None = None,
         embed_ms: float | None = None,
         redis_ms: float | None = None,
-        prompt_preview: str | None = None,
+        prompt: str | None = None,
+        response: str | None = None,
         reason: str | None = None,
     ) -> None:
+        """Append one event to the ring (contract v2: id + full text).
+
+        ``prompt`` is the full last-user message and ``response`` the full
+        answer text (null on bypass/error) — the dashboard's unified log
+        renders both verbatim (docs/ui-plan.md v2). One extra round-trip
+        (the id INCR) keeps the pushed JSON complete; locally negligible.
+        """
         event = {
             "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "status": status,
@@ -288,7 +308,8 @@ class RedisCache:
             "latency_ms": round(float(latency_ms), 1),
             "embed_ms": None if embed_ms is None else round(float(embed_ms), 1),
             "redis_ms": None if redis_ms is None else round(float(redis_ms), 1),
-            "prompt_preview": (prompt_preview or "")[:80],
+            "prompt": prompt or "",
+            "response": response,
             "reason": reason,
         }
         counters_key = f"{self.stats_prefix}:counters"
@@ -296,6 +317,9 @@ class RedisCache:
         if self.memory_mode:
             self._mem_record(status, event)
             return
+        # stats:event_seq is deliberately NOT reset by reset_stats() — ids
+        # must stay unique across resets for the dashboard's keyed reconcile.
+        event["id"] = int(self.r.incr(f"{self.stats_prefix}:event_seq"))
         pipe = self.r.pipeline(transaction=False)
         pipe.hincrby(counters_key, "requests", 1)
         pipe.hincrby(counters_key, _counter_field(status), 1)
@@ -321,7 +345,7 @@ class RedisCache:
 
         s = self.settings
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "service": {
                 "name": s.name,
@@ -354,6 +378,8 @@ class RedisCache:
         }
 
     def reset_stats(self) -> dict[str, Any]:
+        """Zero counters + event ring. stats:event_seq deliberately survives:
+        event ids must stay unique across resets (see record_event)."""
         if self.memory_mode:
             self._mem_counters = {k: 0 for k in self._mem_counters}
             self._mem_events = []

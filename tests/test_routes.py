@@ -100,10 +100,14 @@ def test_stats_and_reset(client):
     assert stats["totals"]["requests"] == 2
     assert stats["totals"]["exact_hits"] == 1
     assert stats["totals"]["misses"] == 1
-    assert stats["schema_version"] == 1
+    assert stats["schema_version"] == 2
     assert stats["service"]["distance_threshold"] == 0.20
     assert stats["service"]["uptime_s"] >= 0
     assert len(stats["recent"]) == 2
+    # contract v2: full prompt + answer text in every event
+    assert stats["recent"][0]["prompt"] == "What is Redis?"
+    assert stats["recent"][0]["response"] == "ANS[What is Redis?]"
+    assert isinstance(stats["recent"][0]["id"], int)
 
     reset = client.post("/stats/reset").json()
     assert reset["totals"]["requests"] == 0

@@ -103,6 +103,7 @@ class FakeCache:
         self.counters: dict[str, int] = defaultdict(int)
         self.distance_threshold = distance_threshold
         self.prefix = "sem"
+        self.seq = 0
         self.stored = 0
         self.r = _FakeRedisClient()
 
@@ -169,8 +170,9 @@ class FakeCache:
 
         self.counters["requests"] += 1
         self.counters[_counter_field(status)] += 1
+        self.seq += 1
         self.events.append(
-            {"status": status, "latency_ms": round(float(latency_ms), 1), **kw}
+            {"id": self.seq, "status": status, "latency_ms": round(float(latency_ms), 1), **kw}
         )
 
     def get_stats(self) -> dict[str, Any]:
@@ -179,7 +181,7 @@ class FakeCache:
         exact = self.counters.get("exact_hits", 0)
         semantic = self.counters.get("semantic_hits", 0)
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "generated_at": "2026-11-06T00:00:00Z",
             "service": {
                 "name": "llm-cache",
@@ -204,7 +206,8 @@ class FakeCache:
                 "p50": round(percentile(latencies, 50), 1) if latencies else 0.0,
                 "p95": round(percentile(latencies, 95), 1) if latencies else 0.0,
             },
-            "recent": self.events[-100:],
+            # newest first, matching the real store's LPUSH/LRANGE contract
+            "recent": list(reversed(self.events))[-100:],
         }
 
     def reset_stats(self) -> dict[str, Any]:

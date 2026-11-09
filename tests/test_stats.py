@@ -34,7 +34,7 @@ def test_stats_contract_empty(client):
     r = client.get("/stats")
     assert r.status_code == 200, r.text
     p = r.json()
-    assert p["schema_version"] == 1
+    assert p["schema_version"] == 2
     assert "generated_at" in p and "service" in p and "totals" in p and "latency_ms" in p and "recent" in p
     for f in ("name", "version", "uptime_s", "model", "embedder", "distance_threshold", "ttl_s"):
         assert f in p["service"]
@@ -48,11 +48,14 @@ def test_stats_contract_empty(client):
 
 def test_record_then_stats(client, store):
     store.record_event("exact-hit", model="llama3.2:3b", similarity=0.01, threshold=0.10,
-                       latency_ms=9, embed_ms=2, redis_ms=1, prompt_preview="What is Redis?")
+                       latency_ms=9, embed_ms=2, redis_ms=1, prompt="What is Redis?",
+                       response="Redis is an in-memory data store.")
     store.record_event("semantic-hit", model="llama3.2:3b", similarity=0.04, threshold=0.10,
-                       latency_ms=12, embed_ms=3, redis_ms=1, prompt_preview="what is redis??")
+                       latency_ms=12, embed_ms=3, redis_ms=1, prompt="what is redis??",
+                       response="Redis is an in-memory data store.")
     store.record_event("miss", model="llama3.2:3b", similarity=None, threshold=0.10,
-                       latency_ms=9800, embed_ms=21, redis_ms=2, prompt_preview="Explain TCP?")
+                       latency_ms=9800, embed_ms=21, redis_ms=2, prompt="Explain TCP?",
+                       response="TCP is a connection-oriented transport protocol.")
     r = client.get("/stats")
     assert r.status_code == 200, r.text
     p = r.json()
@@ -70,6 +73,28 @@ def test_record_then_stats(client, store):
     ev = p["recent"][1]
     assert ev["status"] == "semantic-hit"
     assert ev["threshold"] == 0.10
+    # contract v2: stable ids + full text (no prompt_preview anywhere)
+    assert "prompt_preview" not in ev
+    assert ev["prompt"] == "what is redis??"
+    assert ev["response"] == "Redis is an in-memory data store."
+    ids = [e["id"] for e in p["recent"]]
+    assert all(isinstance(i, int) for i in ids)
+    assert ids == sorted(ids, reverse=True)  # newest (highest id) first
+    assert p["recent"][0]["response"] == "TCP is a connection-oriented transport protocol."
+
+
+def test_event_ids_are_monotonic_across_resets(client, store):
+    """Ids must stay unique across /stats/reset — the dashboard reconciles
+    log rows by id (docs/ui-plan.md v2)."""
+    store.record_event("miss", model="llama3.2:3b", latency_ms=100, prompt="one")
+    store.record_event("miss", model="llama3.2:3b", latency_ms=100, prompt="two")
+    before = [e["id"] for e in client.get("/stats").json()["recent"]]
+
+    client.post("/stats/reset")
+    store.record_event("miss", model="llama3.2:3b", latency_ms=100, prompt="three")
+    after = client.get("/stats").json()["recent"]
+    assert len(after) == 1
+    assert after[0]["id"] > max(before)
 
 
 def test_reset_zeroes(client, store):

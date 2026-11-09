@@ -101,7 +101,8 @@ async def chat_completions(
             latency_ms=latency_ms,
             model=body.get("model"),
             reason=policy.reason,
-            prompt_preview=_preview(body),
+            prompt=_last_user_text_safe(body),
+            response=_answer_text(upstream),
         )
         return JSONResponse(
             upstream,
@@ -110,6 +111,7 @@ async def chat_completions(
 
     model = body["model"]
     messages = body["messages"]
+    prompt = last_user_text(messages) or ""
 
     # --- Tier 1: exact hash --------------------------------------------------
     redis_started = time.perf_counter()
@@ -123,7 +125,8 @@ async def chat_completions(
             latency_ms=latency_ms,
             model=model,
             redis_ms=redis_ms,
-            prompt_preview=_preview(body),
+            prompt=prompt or "",
+            response=_answer_text(json.loads(stored_response)),
         )
         return JSONResponse(
             json.loads(stored_response),
@@ -131,7 +134,6 @@ async def chat_completions(
         )
 
     # --- Tier 2: semantic range ----------------------------------------------
-    prompt = last_user_text(messages) or ""
     embed_started = time.perf_counter()
     vec = embedder.embed(prompt)
     embed_ms = (time.perf_counter() - embed_started) * 1000
@@ -152,7 +154,8 @@ async def chat_completions(
             threshold=settings.distance_threshold,
             embed_ms=embed_ms,
             redis_ms=redis_ms,
-            prompt_preview=prompt,
+            prompt=prompt,
+            response=_answer_text(json.loads(similar["response"])),
         )
         headers = _cache_headers(
             "semantic-hit", latency_ms, similarity=similar.get("similarity"),
@@ -196,7 +199,8 @@ async def chat_completions(
         threshold=settings.distance_threshold,
         embed_ms=embed_ms,
         redis_ms=redis_ms,
-        prompt_preview=prompt,
+        prompt=prompt,
+        response=_answer_text(upstream),
     )
     return JSONResponse(
         upstream,
@@ -280,13 +284,24 @@ async def record_demo_event(
         threshold=body.get("threshold", request.app.state.settings.distance_threshold),
         embed_ms=body.get("embed_ms", 2),
         redis_ms=body.get("redis_ms", 1),
-        prompt_preview=body.get("prompt_preview", "demo prompt"),
+        prompt=body.get("prompt", "demo prompt"),
+        response=body.get("response"),
     )
     return JSONResponse(request.app.state.store.get_stats())
 
 
-def _preview(body: dict[str, Any]) -> str:
+def _last_user_text_safe(body: dict[str, Any]) -> str:
+    """Full last-user message, tolerant of malformed shapes (bypass path)."""
     try:
         return last_user_text(body.get("messages") or []) or ""
     except (TypeError, ValueError):
         return ""
+
+
+def _answer_text(payload: Any) -> str | None:
+    """Answer text of an OpenAI-compatible completion payload, or None."""
+    try:
+        content = payload["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    return content if isinstance(content, str) else None
