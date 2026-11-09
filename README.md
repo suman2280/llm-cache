@@ -58,6 +58,35 @@ clamped 500–60000), pauses when the tab is hidden.
 - **States:** empty (no requests yet), stale/error (banner keeps last
   payload with a `● stale` chip).
 
+### Try a prompt (from the UI)
+
+The **Try a prompt** panel posts a real `POST /v1/chat/completions` to the
+proxy that serves this page (same origin — no CORS, no extra backend) and
+renders each response as a card with the cache verdict that decided it:
+
+```
+semantic-hit · 13 ms · d=0.058 · embed 12 / redis 1 · HTTP 200
+Can you explain what a load balancer does?
+A load balancer is a device or software that distributes incoming …
+served from: What is a load balancer?
+```
+
+- **No model input** — there is exactly one model in this deployment, so the panel sends to
+  `service.model` from `GET /stats` (shown next to the panel title) instead of asking.
+- **temperature / system** are the only knobs; the prompt box is the primary control.
+- **Send** (or <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Enter</kbd>) — the button disables itself
+  while a miss runs inference (seconds on CPU).
+- **Clear log** empties the card list; **Reset counters** calls
+  `POST /stats/reset` (confirms first).
+- The canonical three-step demo: send a question (**miss**), send the exact
+  same text again (**exact-hit**, ~1 ms), then reword it
+  (**semantic-hit**, ~15 ms with `d=` and the source prompt).
+- Same staleness rules as the rest of the page: if the proxy is down the card
+  shows an `error` badge with the reason, and the `● stale` banner appears.
+
+All rendering is `textContent`-only (no `innerHTML`), so prompt/answer text
+can never inject markup.
+
 ### Seed demo data (validates UI plan U-4)
 
 ```powershell
@@ -164,6 +193,9 @@ All settings overridable with `LLM_CACHE_*` env vars or a `.env` file:
 
 - **Streaming** (`stream: true` → `400`); tool-calling and vision-only prompts
   bypass the cache (pass-through, labelled `X-Cache-Policy`)
+- The **dashboard is read-only apart from the "Try a prompt" panel** — prompt
+  play is the one write action, and it goes through the same
+  `/v1/chat/completions` a normal client uses
 - Multi-turn/agentic traffic semantics, auth, rate limiting
 - A bundled dashboard UI — `/stats` is the designed API for one (plan:
   [`docs/ui-plan.md`](docs/ui-plan.md))

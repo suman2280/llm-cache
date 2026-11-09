@@ -27,6 +27,43 @@
   </div>
 
   <main class="layout">
+    <section aria-label="Try a prompt" class="panel panel-try">
+      <div class="panel-head">
+        <h2 class="panel-title">Try a prompt</h2>
+        <span class="panel-sub">
+          model: <span id="try-model-label">—</span> · <kbd>Ctrl</kbd>+<kbd>Enter</kbd> sends
+        </span>
+      </div>
+      <form id="try-form" class="try-form" autocomplete="off">
+        <textarea id="try-prompt" class="try-prompt" rows="4"
+          placeholder="Ask anything — e.g. What is Redis?" required></textarea>
+        <div class="try-row">
+          <label class="field field-temp">
+            <span>Temp</span>
+            <input id="try-temp" type="number" min="0" max="2" step="0.1" value="0" />
+          </label>
+          <label class="field field-system">
+            <span>System</span>
+            <input id="try-system" type="text" placeholder="optional system prompt" />
+          </label>
+        </div>
+        <div class="try-actions">
+          <button id="try-send" type="submit" class="btn btn-primary">Send</button>
+          <span id="try-status" class="try-status" role="status" aria-live="polite"></span>
+          <span class="try-actions-spacer" aria-hidden="true"></span>
+          <button id="try-clear" type="button" class="btn btn-quiet">Clear log</button>
+          <button id="try-reset" type="button" class="btn btn-quiet"
+            title="Zero the counters and the event feed (POST /stats/reset)">Reset counters</button>
+        </div>
+      </form>
+      <p id="try-empty" class="empty-state">
+        No prompts sent yet. Send one question, send it again
+        (<code>miss</code> → <code>exact-hit</code>), then reword it to watch a
+        <code>semantic-hit</code>.
+      </p>
+      <ol id="try-log" class="try-log" aria-live="polite" aria-label="Prompt results, oldest first"></ol>
+    </section>
+
     <section aria-label="Counters" class="panel">
       <div class="kpis" aria-live="polite">
         <div class="kpi"><span class="kpi-label">Requests</span><span class="kpi-value" id="kpi-requests">0</span></div>

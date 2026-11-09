@@ -21,6 +21,12 @@ FastAPI app itself; polls `GET /stats`.
 **Out (future, not now):** login/multi-user views, charts (benchmark report owns charts),
 event filtering/search UI, websockets/SSE, threshold adjustment controls, mobile-first design.
 
+> **Update (post-MVP):** a read-only dashboard could not demonstrate *its own* thesis — that a
+> rephrase never reaches inference — so §U8 adds the **Try a prompt** panel: the one write action
+> in the UI, going through the normal `/v1/chat/completions` endpoint a client uses (no new
+> backend surface). Nothing else in §U2 changes: still no websockets, no threshold controls, no
+> login.
+
 ## U3. The `/stats` contract (design target)
 
 Single endpoint, JSON, `schema_version`-ed, Redis-backed (counters via `INCR`, events via
@@ -150,3 +156,61 @@ Vanilla HTML + CSS + JS in one page; system font stack; dark, high-contrast, col
 - **`usage` unavailability from Ollama** (see `plan.md` §13 Q2): tokens-saved is *not* part of
   the dashboard contract; "inferences avoided" (hits count) is available regardless.
 - **Scope creep:** filtering/charts/controls are explicitly out of MVP (§2).
+
+## U8. Try a prompt (playground)
+
+The dashboard's one write action: a form that sends a real completion through the proxy so the
+cache tiers can be demonstrated without curl. **No backend change** — it POSTs the same
+`/v1/chat/completions` an OpenAI-compatible client uses, from the same origin the page is served
+from (`http://localhost:8000/dashboard/`), so there is no CORS surface and no new endpoint.
+
+### Model
+
+```
+<form> <textarea prompt — the primary control, 5.5rem min height>
+       temp · system (secondary row)
+       [Send] status … [Clear log] [Reset counters]   ← Ctrl/Cmd+Enter submits
+
+cards (oldest → newest, aria-live="polite"):
+  semantic-hit · 13 ms · d=0.058 · embed 12 / redis 1 · HTTP 200
+  Can you explain what a load balancer does?
+  A load balancer is a device or software that distributes incoming …
+  served from: What is a load balancer?
+```
+
+### Rules
+
+- **Verdict comes from the response headers, not re-derived client-side:** `X-Cache-Status`,
+  `X-Cache-Similarity`, `X-Cache-Source-Prompt`, `X-Cache-Latency-Ms`, `X-Embed-Ms`,
+  `X-Redis-Ms`, `X-Cache-Policy`. The card is a rendering of the proxy's own truth.
+- **Answer body** = `choices[0].message.content`; HTTP ≥ 400 or a transport failure renders an
+  `error`-badged card carrying `detail` (e.g. Ollama's 404 for an unknown model) so failures are
+  visible rather than swallowed.
+- **No model input.** One model per deployment → the panel POSTs `service.model` as reported by
+  `GET /stats` and displays it in the panel header. If a submit races the very first poll, the
+  panel waits for the in-flight poll (button disabled, "waiting for /stats…") rather than failing —
+  and says so plainly if `/stats` stays unreachable (`plan.md` §7: config surfaced here must stay
+  truthful, never invented).
+- **In-flight state:** Send disables and reads "Sending…" (a miss runs inference — seconds), so
+  double-submits are impossible and the wait is explained rather than looking like a hang.
+- **Reset counters** → `POST /stats/reset` behind `confirm()` — it wipes lifetime counters and
+  the event feed, which must never happen by mis-click.
+- **XSS safety:** every prompt/answer/detail string is written with `textContent`; no
+  `innerHTML`, matching the rest of the dashboard (§U4).
+- **Stale handling:** inherits the existing `● stale` chip/banner; a down proxy produces error
+  cards, not a blank panel.
+
+### Why this matters
+
+The three-tier claim becomes self-demonstrating in one tab: send a question (**miss**, seconds),
+send the identical text (**exact-hit**, ~1 ms), reword it (**semantic-hit**, ~15 ms with `d=` and
+the prompt the answer came from). The benchmark proves it at scale (§`plan.md` §14); the panel
+proves it interactively.
+
+### Validation
+
+- Unit (no services): all `$("…")` ids in `app.js` resolve in `index.html`; `node --check`
+  passes; the "Clear log" path restores the empty state.
+- Live: real Chrome via CDP filled the form and clicked Send — `miss` / `exact-hit` /
+  `semantic-hit` cards rendered with correct headers, `d=0.058`, and the source prompt; KPI cards
+  updated to 66.7% hit rate without a manual refresh; Reset counters and Clear log verified.

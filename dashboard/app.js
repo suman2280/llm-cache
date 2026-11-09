@@ -1,4 +1,5 @@
-// llm-cache dashboard — polls GET /stats, renders per docs/ui-plan.md U4-U5.
+// llm-cache dashboard — polls GET /stats, renders per docs/ui-plan.md U4-U5,
+// plus the U8 prompt playground (try-it panel).
 // No external requests. XSS-safe: all rendering via textContent.
 // Pauses when tab hidden; refreshes immediately on visible again.
 
@@ -14,6 +15,7 @@ const tbody = $("events-body");
 let lastPayload = null;
 let lastOkAt = null;
 let timer = null;
+let configuredModel = null; // from GET /stats service.model
 
 function pollMs() {
   const raw = new URLSearchParams(location.search).get("poll");
@@ -52,6 +54,11 @@ function render(payload) {
 
   const svc = payload.service || {};
   $("cfg-model").textContent = `model: ${svc.model ?? "—"}`;
+  // The playground sends to the configured model (never an input — there is
+  // exactly one model in this deployment); keep the label truthful from /stats.
+  if (svc.model) configuredModel = svc.model;
+  const modelLabel = $("try-model-label");
+  if (modelLabel && svc.model) modelLabel.textContent = svc.model;
   const emb = svc.embedder ? String(svc.embedder).split("/").pop() : "—";
   $("cfg-embedder").textContent = `embedder: ${emb}`;
   $("cfg-thresh").textContent = `thresh: ${svc.distance_threshold ?? "—"}`;
@@ -123,6 +130,191 @@ function start() {
   if (timer) clearInterval(timer);
   tick();
   timer = setInterval(() => { if (!document.hidden) tick(); }, pollMs());
+  initTry();
+}
+
+// ------------------------------------------------------------- try-it panel
+// Real requests through the cache: POST /v1/chat/completions from the same
+// origin the dashboard is served from, and render the X-Cache-* response
+// headers so a miss / exact-hit / semantic-hit is visible per prompt.
+// XSS-safe: every value is written with textContent (docs/ui-plan.md U4).
+
+function initTry() {
+  const form = $("try-form");
+  const prompt = $("try-prompt");
+  const send = $("try-send");
+  const status = $("try-status");
+  const log = $("try-log");
+
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const text = prompt.value.trim();
+    if (!text || send.disabled) return;
+
+    setSending(true, "waiting for /stats…");
+    let finalNote = "";
+    let finalError = false;
+    try {
+      // The model is fixed by deployment; learn it from the (already in-flight)
+      // first /stats poll rather than failing a submit that races it.
+      const model = await resolveModel();
+      if (!model) {
+        setSending(false, "model unknown — is /stats reachable?", true);
+        return;
+      }
+      const messages = [];
+      const system = $("try-system").value.trim();
+      if (system) messages.push({ role: "system", content: system });
+      messages.push({ role: "user", content: text });
+      const body = { model, messages };
+      const temp = $("try-temp").value;
+      if (temp !== "") body.temperature = Number(temp);
+      setSending(true, "sending… (a miss runs inference — seconds)");
+
+      const res = await fetch("/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const payload = await res.json().catch(() => null);
+      addTryCard({
+        status: res.headers.get("x-cache-status") || (res.ok ? "unknown" : "error"),
+        similarity: res.headers.get("x-cache-similarity"),
+        sourcePrompt: res.headers.get("x-cache-source-prompt"),
+        latencyMs: res.headers.get("x-cache-latency-ms"),
+        embedMs: res.headers.get("x-embed-ms"),
+        redisMs: res.headers.get("x-redis-ms"),
+        policy: res.headers.get("x-cache-policy"),
+        prompt: text,
+        answer: pickAnswer(payload),
+        httpStatus: res.status,
+        detail: pickDetail(payload, res.status),
+      });
+      finalNote = res.ok ? `served · HTTP ${res.status}` : `HTTP ${res.status}`;
+      finalError = !res.ok;
+    } catch (err) {
+      addTryCard({ status: "error", prompt: text, detail: String(err && err.message ? err.message : err) });
+      finalNote = "request failed — is the proxy running?";
+      finalError = true;
+    } finally {
+      setSending(false, finalNote, finalError);
+      tick(); // refresh counters without waiting for the next poll
+    }
+
+    function setSending(on, note, isError) {
+      send.disabled = on;
+      send.textContent = on ? "Sending…" : "Send";
+      if (on) {
+        setTryStatus(note, false);
+      } else {
+        setTryStatus(note || "", Boolean(isError));
+        prompt.focus();
+      }
+    }
+
+    async function resolveModel(timeoutMs = 10_000) {
+      const started = Date.now();
+      while (!configuredModel && Date.now() - started < timeoutMs) {
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      return configuredModel;
+    }
+  });
+
+  $("try-clear").addEventListener("click", () => {
+    log.replaceChildren();
+    $("try-empty").hidden = false;
+    setTryStatus("");
+  });
+
+  $("try-reset").addEventListener("click", async () => {
+    if (!confirm("Reset all counters and clear the event feed?")) return;
+    try {
+      const res = await fetch("/stats/reset", { method: "POST" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setTryStatus("counters reset");
+      tick();
+    } catch (err) {
+      setTryStatus(`reset failed: ${err.message}`, true);
+    }
+  });
+
+  prompt.addEventListener("keydown", (ev) => {
+    if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") form.requestSubmit();
+  });
+
+  function setTryStatus(text, isError) {
+    status.textContent = text || "";
+    status.classList.toggle("try-status-error", Boolean(isError));
+  }
+}
+
+function pickAnswer(payload) {
+  try {
+    return payload.choices[0].message.content ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function pickDetail(payload, httpStatus) {
+  if (payload && typeof payload.detail === "string") return payload.detail;
+  return httpStatus >= 400 ? `request failed (HTTP ${httpStatus})` : null;
+}
+
+function addTryCard(c) {
+  const log = $("try-log");
+  const empty = $("try-empty");
+  const li = document.createElement("li");
+  li.className = `try-card${c.status === "error" ? " try-card-error" : ""}${
+    ["miss", "exact-hit", "semantic-hit", "bypass"].includes(c.status) ? ` try-card-${c.status}` : ""}`;
+
+  const head = document.createElement("div");
+  head.className = "try-card-head";
+  const badge = document.createElement("span");
+  badge.className = `badge ${badgeClass(c.status)}`;
+  badge.textContent = c.status || "unknown";
+  const metaBits = [];
+  if (c.latencyMs) metaBits.push(`${Math.round(Number(c.latencyMs) || 0)} ms`);
+  if (c.similarity) metaBits.push(`d=${c.similarity}`);
+  if (c.embedMs != null || c.redisMs != null) {
+    metaBits.push(`embed ${Math.round(Number(c.embedMs) || 0)} / redis ${Math.round(Number(c.redisMs) || 0)}`);
+  }
+  if (c.policy) metaBits.push(`policy: ${c.policy}`);
+  if (c.httpStatus) metaBits.push(`HTTP ${c.httpStatus}`);
+  const meta = document.createElement("span");
+  meta.className = "try-card-meta";
+  meta.textContent = metaBits.join(" · ");
+  head.append(badge, meta);
+
+  const q = document.createElement("p");
+  q.className = "try-q";
+  q.textContent = c.prompt || "";
+
+  li.append(head, q);
+
+  if (c.answer) {
+    const a = document.createElement("p");
+    a.className = "try-a";
+    a.textContent = c.answer;
+    li.appendChild(a);
+  }
+  if (c.sourcePrompt) {
+    const src = document.createElement("p");
+    src.className = "try-src";
+    src.textContent = `served from: ${c.sourcePrompt}`;
+    li.appendChild(src);
+  }
+  if (c.detail) {
+    const d = document.createElement("p");
+    d.className = "try-src try-detail";
+    d.textContent = c.detail;
+    li.appendChild(d);
+  }
+
+  empty.hidden = true;
+  log.appendChild(li);
+  li.scrollIntoView({ block: "nearest" });
 }
 
 document.addEventListener("visibilitychange", () => {
