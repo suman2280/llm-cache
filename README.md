@@ -45,49 +45,40 @@ http://localhost:8000/stats.
 ## Dashboard (`/dashboard/`)
 
 Vanilla HTML/CSS/JS served by the FastAPI app itself — no build step, no
-CDN, no external requests. Polls `GET /stats` every 1s (`?poll=<ms>`,
-clamped 500–60000), pauses when the tab is hidden.
+framework, no CDN, no external requests. One poll of `GET /stats` per second
+(`?poll=<ms>`, clamped 500–60000); pauses when the tab is hidden. Rows are
+reconciled by event id (`dashboard/reconcile.js`, pure + node-tested), so
+expanded rows keep their state across polls and new rows FLIP in via View
+Transitions.
 
-- **Config strip:** model, embedder, threshold, uptime, version.
-- **KPI cards:** requests, hit rate, exact hits, semantic hits, misses,
-  bypasses, errors, inferences avoided (`aria-live="polite"`).
-- **Latency:** p50/p90/p95/p99/max over the **last 100 events** (`n` shown;
-  `—` when `n = 0`).
-- **Recent events:** newest-first table with `<caption>`/scope headers,
-  status badges carry text (never color-only).
-- **States:** empty (no requests yet), stale/error (banner keeps last
-  payload with a `● stale` chip).
+- **Hero — the demo moment.** A composer (prompt, temp, optional system) and
+  **Run the demo**, which sends a question, the exact same text, then a
+  rewording — live: **miss** (inference, seconds) → **exact-hit** (~1 ms) →
+  **semantic-hit** (~15 ms, with `d=` and the prompt it was served from).
+  The verdict line is the proxy's own `X-Cache-*` headers, never re-derived.
+  The demo rotates through a question pool; a warm cache reports honestly
+  ("already cached") instead of lying about a miss.
+- **Instrument band.** Config strip (model, embedder, threshold, uptime,
+  version); KPI tiles with animated counters (requests, hit rate, exact,
+  semantic, misses, bypasses, errors, inferences avoided); latency
+  percentiles over the **last 100 events** (`n` shown).
+- **One unified log.** Every request through the proxy — from this page, curl,
+  or any OpenAI client — lands in the same newest-first feed. Each row shows
+  the verdict badge, distance, latency, cache overhead, and prompt preview;
+  expand (native `<details>`, keyboard-accessible) for the full question, the
+  full answer, and the `served from:` source prompt on semantic hits.
+- **Design.** OKLCH token palette with a lightness ladder, cascade layers,
+  one accent hue, paired status colors, tabular numerals — the grammar of
+  Linear/Vercel/Langfuse-class dashboards, hand-written in ~600 lines of CSS.
+  Dark-only; tokens are `light-dark()`-ready if a light theme is ever added.
+- **States:** empty (narrates the three tiers), stale (`● stale` chip + banner,
+  last payload kept), error rows (detail shown, never swallowed).
+- All rendering is `textContent`-only (no `innerHTML`) — now covering full
+  answer text, not just previews.
+- `aria-live` is scoped to the composer's verdict line so a 1 s poll can't
+  spam a screen reader; the log is `aria-live="off"`.
 
-### Try a prompt (from the UI)
-
-The **Try a prompt** panel posts a real `POST /v1/chat/completions` to the
-proxy that serves this page (same origin — no CORS, no extra backend) and
-renders each response as a card with the cache verdict that decided it:
-
-```
-semantic-hit · 13 ms · d=0.058 · embed 12 / redis 1 · HTTP 200
-Can you explain what a load balancer does?
-A load balancer is a device or software that distributes incoming …
-served from: What is a load balancer?
-```
-
-- **No model input** — there is exactly one model in this deployment, so the panel sends to
-  `service.model` from `GET /stats` (shown next to the panel title) instead of asking.
-- **temperature / system** are the only knobs; the prompt box is the primary control.
-- **Send** (or <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Enter</kbd>) — the button disables itself
-  while a miss runs inference (seconds on CPU).
-- **Clear log** empties the card list; **Reset counters** calls
-  `POST /stats/reset` (confirms first).
-- The canonical three-step demo: send a question (**miss**), send the exact
-  same text again (**exact-hit**, ~1 ms), then reword it
-  (**semantic-hit**, ~15 ms with `d=` and the source prompt).
-- Same staleness rules as the rest of the page: if the proxy is down the card
-  shows an `error` badge with the reason, and the `● stale` banner appears.
-
-All rendering is `textContent`-only (no `innerHTML`), so prompt/answer text
-can never inject markup.
-
-### Seed demo data (validates UI plan U-4)
+### Seed demo data (no model needed)
 
 ```powershell
 $env:LLM_CACHE_ALLOW_SEED="1"
@@ -95,14 +86,18 @@ uvicorn llm_cache.app:app --port 8000   # terminal 1
 python scripts/seed_demo.py             # terminal 2 — 12 mixed events
 ```
 
-Then reload http://localhost:8000/dashboard/.
+Then reload http://localhost:8000/dashboard/ — mixed verdicts, distances,
+latencies and full answers render.
 
-### `/stats` contract (UI plan U3)
+### `/stats` contract (v2)
 
-`GET /stats` → `{schema_version, generated_at, service{}, totals{},
-latency_ms{}, recent[]}`. `POST /stats/reset` clears counters + feed
-(Redis `INCR` / `LPUSH`/`LTRIM` when Redis is up, in-memory fallback
-otherwise — same payload either way).
+`GET /stats` → `{schema_version: 2, generated_at, service{}, totals{},
+latency_ms{}, recent[]}`. Each `recent` event carries a stable monotonic
+`id` (survives `POST /stats/reset` so clients can reconcile rows), the full
+`prompt` and `response` (null on bypass/error), `source_prompt` on semantic
+hits, plus `status/model/similarity/threshold/latency_ms/embed_ms/redis_ms/
+ts/reason`. `POST /stats/reset` zeroes counters + feed (the event *sequence*
+deliberately survives — ids must stay unique across resets).
 
 ---
 
@@ -193,9 +188,10 @@ All settings overridable with `LLM_CACHE_*` env vars or a `.env` file:
 
 - **Streaming** (`stream: true` → `400`); tool-calling and vision-only prompts
   bypass the cache (pass-through, labelled `X-Cache-Policy`)
-- The **dashboard is read-only apart from the "Try a prompt" panel** — prompt
-  play is the one write action, and it goes through the same
-  `/v1/chat/completions` a normal client uses
+- The **dashboard's only write action is the composer / Run-the-demo panel** —
+  and it goes through the same `/v1/chat/completions` a normal client uses.
+  It sends real requests (the first runs inference and populates the cache);
+  the verdict line always reports the proxy's own headers
 - Multi-turn/agentic traffic semantics, auth, rate limiting
 - A bundled dashboard UI — `/stats` is the designed API for one (plan:
   [`docs/ui-plan.md`](docs/ui-plan.md))
@@ -206,12 +202,30 @@ All settings overridable with `LLM_CACHE_*` env vars or a `.env` file:
 ```bash
 uv sync --extra dev
 uv run pytest                       # unit tests (fakes: no Redis/Ollama/model needed)
-uv run ruff check src tests
+uv run ruff check src tests scripts
+uv run python scripts/check_dashboard.py   # every JS-referenced id exists in index.html
+
+# dashboard unit tests — Node's built-in runner, zero dependencies:
+# the log-reconciliation planner (the page's one load-bearing assumption)
+node --test dashboard/          # or: npm test
+
+# dashboard dev server with HMR (DEV-ONLY; production serves the same files):
+npm install                      # one time, dev-only (Vite 8, no framework)
+npm run dev                      # http://localhost:5173 — proxies /stats,/v1 to :8000
+
+# end-to-end UI smoke in real Chrome (needs the proxy + Redis + Ollama up):
+npm i -D puppeteer-core          # one time, dev-only
+node scripts/ui_smoke.mjs       # drives Run the demo: miss → exact-hit → semantic-hit
+
 # live integration (requires Redis + Ollama; note: FT.* indexes are DB-0 only):
 LLM_CACHE_TEST_REDIS_URL=redis://localhost:6379/0 \
 LLM_CACHE_TEST_OLLAMA_URL=http://localhost:11434 \
     uv run pytest tests/integration
 ```
+
+> **No build step in production.** `uv run uvicorn llm_cache.app:app` serves
+> the `dashboard/` files exactly as they are in the repo; Node (Vite, tests,
+> Chrome smoke) is dev-only tooling and never enters the runtime path.
 
 ## Validation notes
 
@@ -246,8 +260,15 @@ src/llm_cache/
 ├── ollama.py       # async Ollama client
 ├── routes.py       # /v1 endpoints + /healthz + /stats + demo seed
 ├── benchmark/      # dataset, replay sweep, markdown/chart report
-dashboard/          # static UI polling /stats (docs/ui-plan.md)
+dashboard/
+├── index.html      # hero composer + demo button + instrument band + unified log
+├── style.css       # @layered OKLCH token system (~600 lines, no framework)
+├── app.js          # poll → keyed reconcile (View Transitions) → tickers
+├── reconcile.js    # pure log-reconciliation planner (npm test)
+└── reconcile.test.js
 scripts/seed_demo.py
+scripts/check_dashboard.py
+scripts/ui_smoke.mjs              # dev-only Chrome smoke test of the demo flow
 tests/               # unit (fakes) + stats contract + gated live integration
 ```
 
@@ -255,6 +276,8 @@ tests/               # unit (fakes) + stats contract + gated live integration
 
 ```bash
 uv run pytest                       # 47 tests: unit + stats contract (no services needed)
+node --test dashboard/              # 9 reconciliation tests (no browser, zero deps)
+uv run python scripts/check_dashboard.py
 # with live Redis + Ollama (3 more integration tests):
 LLM_CACHE_TEST_REDIS_URL=redis://localhost:6379/0 \
 LLM_CACHE_TEST_OLLAMA_URL=http://localhost:11434 uv run pytest tests/integration

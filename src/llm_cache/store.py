@@ -290,6 +290,7 @@ class RedisCache:
         redis_ms: float | None = None,
         prompt: str | None = None,
         response: str | None = None,
+        source_prompt: str | None = None,
         reason: str | None = None,
     ) -> None:
         """Append one event to the ring (contract v2: id + full text).
@@ -310,6 +311,7 @@ class RedisCache:
             "redis_ms": None if redis_ms is None else round(float(redis_ms), 1),
             "prompt": prompt or "",
             "response": response,
+            "source_prompt": source_prompt,
             "reason": reason,
         }
         counters_key = f"{self.stats_prefix}:counters"

@@ -7,6 +7,12 @@ __pycache__/
 .env
 scratch/
 
+# dev-only Node tooling (dashboard HMR). Production serves the static files
+# from FastAPI; node/ never enters the runtime path.
+node_modules/
+dashboard/dist/
+dist/
+
 # benchmark raw artifacts (regenerable); results.md / results.json / the chart
 # are committed as exhibits
 results/baseline.json

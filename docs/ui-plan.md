@@ -214,3 +214,28 @@ proves it interactively.
 - Live: real Chrome via CDP filled the form and clicked Send — `miss` / `exact-hit` /
   `semantic-hit` cards rendered with correct headers, `d=0.058`, and the source prompt; KPI cards
   updated to 66.7% hit rate without a manual refresh; Reset counters and Clear log verified.
+
+---
+
+# v2 — the unified instrument (dashboard redesign)
+
+The U1–U8 dashboard worked but read as assembled: two parallel views of the same reality (the `/stats` event table and the playground's own card list), flat hand-picked colors, no way to read an answer, and nothing on the page demonstrated the thesis. v2 collapses those views into one **unified log**, makes the three-tier demo the hero, and moves the visual system to documented tokens — same scope, better execution. Decisions below are the settled design record.
+
+## What changed
+
+- **One log, not two.** Playground sends no longer render their own cards; they POST the same `/v1/chat/completions` any client uses and land in the same feed as curl traffic. The dashboard is an instrument, not a sandbox.
+- **Full Q/A, expandable rows.** Contract v2 events carry the full `prompt` and `response`; rows are native `<details>` (keyboard-native, state preserved across polls) rendering question, answer, and `served from:` source prompt. The old 80-char preview is gone.
+- **Hero composer + Run the demo.** The money moment: one click sends a question, the same text, a rewording — `miss → exact-hit → semantic-hit`, each row flashing as it lands. The demo **rotates through a question pool** and reports whatever the cache actually says — a warm cache yields "already cached", never a faked miss.
+- **`/stats` contract v2** (`schema_version: 2`): `id` (monotonic, survives reset), `prompt`, `response`, `source_prompt`; `prompt_preview` removed. The id is the row-identity key for reconciliation; `stats:event_seq` deliberately survives `POST /stats/reset`.
+- **Visual system.** OKLCH token palette (lightness ladder, one accent, paired status colors), `@layer`-organized CSS, hairline + inset-top-light panels, tabular numerals, two motion tiers, one `prefers-reduced-motion` guard. Dark-only by decision; tokens are `light-dark()`-ready.
+- **Motion.** View Transitions FLIP the log on new events (rows carry `view-transition-class`), scroll-driven `view()` row reveals, KPI tickers on one rAF loop — all disabled under `prefers-reduced-motion`.
+- **Reconciliation, not re-render.** Wholesale `replaceChildren()` would collapse expanded rows and fight scroll every poll; `dashboard/reconcile.js` diffs event ids and the DOM walk preserves element identity. The planner is pure and unit-tested (`node --test dashboard/`), including an exhaustive permutation proof.
+- **A11y corrections:** KPI values are `aria-live="off"` (they would tick every second); the only polite live region is the composer verdict line; the log is `aria-live="off"`.
+- **Dev workflow:** Vite 8 **dev-only** (`npm run dev`, proxies `/stats`,`/v1`,`/healthz` to :8000 — one origin, no CORS). Production is unchanged: FastAPI serves the same static files, no build step, no runtime Node. README says exactly that.
+
+## Validation (v2)
+
+- **G1 — reconciliation gate:** the risky assumption (keyed diff of a 100-row expandable log at 1 s polls) was tested *before* the rewrite as pure logic — and the exhaustive permutation test caught a real bug (reordered ids produced duplicate inserts). Fixed, 9/9 green. Live behavior verified below.
+- **Live (CDP, `scripts/ui_smoke.mjs`):** real Chrome drives Run the demo against live Redis+Ollama — `miss → exact-hit → semantic-hit` with the source prompt named, row expansion shows the full answer, KPIs update, `/stats` failure shows the stale banner, and **zero external requests** (offline claim). 7/7 checks pass.
+- **Bug the smoke caught:** the demo originally omitted `temperature`, so "send the same text" hashed differently and became a *semantic* hit served from itself (`d=0.000`). The demo now sends `temperature: 0` explicitly — matching the composer's default — so the exact tier does its job.
+- **Contract checks:** `pytest` (45 unit + 3 gated live integration), `ruff`, `node --check`, `scripts/check_dashboard.py` (all JS-referenced ids exist in `index.html`).

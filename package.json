@@ -1,0 +1,15 @@
+{
+  "name": "llm-cache-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "DEV-ONLY tooling for the llm-cache dashboard (HMR + unit tests). Production serves the same static files from FastAPI — there is no build step and no runtime dependency on Node.",
+  "scripts": {
+    "dev": "vite",
+    "test": "node --test dashboard/"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^25.16.0",
+    "vite": "^8.0.0"
+  }
+}

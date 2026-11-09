@@ -3,71 +3,73 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>llm-cache — dashboard</title>
-  <meta name="description" content="Live evidence of the llm-cache proxy claim: counters, latency percentiles, and recent cache events." />
+  <title>llm-cache — live cache dashboard</title>
+  <meta name="description" content="Live proof of the llm-cache thesis: send a request, watch it miss inference, then serve rephrasings from the Redis cache in milliseconds." />
   <link rel="stylesheet" href="/dashboard/style.css" />
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
-      <span class="brand-name">llm-cache</span>
-      <span id="live-chip" class="chip chip-live" title="Dashboard connection state">● live</span>
+      <span class="brand-name">llm&#8209;cache</span>
+      <span id="live-chip" class="chip chip-live" title="Dashboard connection state">&#9679; live</span>
     </div>
     <div id="config-strip" class="config-strip" role="status" aria-label="Service configuration">
-      <span id="cfg-model">model: —</span>
-      <span id="cfg-embedder">embedder: —</span>
-      <span id="cfg-thresh">thresh: —</span>
-      <span id="cfg-uptime">uptime: —</span>
-      <span id="cfg-version">v—</span>
+      <span id="cfg-model">model: &#8212;</span>
+      <span id="cfg-embedder">embedder: &#8212;</span>
+      <span id="cfg-thresh">thresh: &#8212;</span>
+      <span id="cfg-uptime">uptime: &#8212;</span>
+      <span id="cfg-version">v&#8212;</span>
     </div>
   </header>
 
   <div id="stale-banner" class="stale-banner" role="alert" hidden>
-    <span id="stale-text">/stats unreachable — showing last data</span>
+    <span id="stale-text">/stats unreachable &#8212; showing last data</span>
   </div>
 
   <main class="layout">
-    <section aria-label="Try a prompt" class="panel panel-try">
+
+    <!-- ============ HERO: the demo moment ============ -->
+    <section class="panel panel-hero" aria-label="Send a request through the cache">
       <div class="panel-head">
-        <h2 class="panel-title">Try a prompt</h2>
-        <span class="panel-sub">
-          model: <span id="try-model-label">—</span> · <kbd>Ctrl</kbd>+<kbd>Enter</kbd> sends
-        </span>
+        <h1 class="hero-title">Send a request. Watch the cache answer.</h1>
+        <span class="panel-sub">model: <span id="hero-model" class="mono">&#8212;</span></span>
       </div>
-      <form id="try-form" class="try-form" autocomplete="off">
-        <textarea id="try-prompt" class="try-prompt" rows="4"
-          placeholder="Ask anything — e.g. What is Redis?" required></textarea>
-        <div class="try-row">
+
+      <form id="send-form" class="send-form" autocomplete="off">
+        <label class="visually-hidden" for="send-prompt">Prompt</label>
+        <textarea id="send-prompt" class="send-prompt" rows="3"
+          placeholder="Ask anything &#8212; e.g. What is a load balancer?"
+          spellcheck="false" required></textarea>
+        <div class="send-row">
           <label class="field field-temp">
             <span>Temp</span>
-            <input id="try-temp" type="number" min="0" max="2" step="0.1" value="0" />
+            <input id="send-temp" type="number" min="0" max="2" step="0.1" value="0" />
           </label>
           <label class="field field-system">
             <span>System</span>
-            <input id="try-system" type="text" placeholder="optional system prompt" />
+            <input id="send-system" type="text" placeholder="optional system prompt" />
           </label>
-        </div>
-        <div class="try-actions">
-          <button id="try-send" type="submit" class="btn btn-primary">Send</button>
-          <span id="try-status" class="try-status" role="status" aria-live="polite"></span>
-          <span class="try-actions-spacer" aria-hidden="true"></span>
-          <button id="try-clear" type="button" class="btn btn-quiet">Clear log</button>
-          <button id="try-reset" type="button" class="btn btn-quiet"
-            title="Zero the counters and the event feed (POST /stats/reset)">Reset counters</button>
+          <span class="send-actions-spacer" aria-hidden="true"></span>
+          <button id="demo-btn" type="button" class="btn btn-demo"
+            title="Send a question, the exact same question, then a rewording &#8212; miss, exact-hit, semantic-hit">Run the demo</button>
+          <button id="send-btn" type="submit" class="btn btn-primary">Send</button>
         </div>
       </form>
-      <p id="try-empty" class="empty-state">
-        No prompts sent yet. Send one question, send it again
-        (<code>miss</code> → <code>exact-hit</code>), then reword it to watch a
-        <code>semantic-hit</code>.
+
+      <p id="send-status" class="send-status" role="status" aria-live="polite"></p>
+      <p class="hero-hint">
+        The first send is a <b>miss</b> (full inference, seconds on CPU). Send the
+        same text again &#8212; <b>exact&#8209;hit</b>, under a millisecond. Reword it &#8212;
+        <b>semantic&#8209;hit</b>, served from the cached answer, with the distance and the
+        source prompt it matched. Every request through the proxy lands in the log below.
       </p>
-      <ol id="try-log" class="try-log" aria-live="polite" aria-label="Prompt results, oldest first"></ol>
     </section>
 
-    <section aria-label="Counters" class="panel">
-      <div class="kpis" aria-live="polite">
+    <!-- ============ instrument band: counters ============ -->
+    <section class="panel panel-band" aria-label="Counters">
+      <div class="kpis">
         <div class="kpi"><span class="kpi-label">Requests</span><span class="kpi-value" id="kpi-requests">0</span></div>
-        <div class="kpi"><span class="kpi-label">Hit rate</span><span class="kpi-value" id="kpi-hits">—</span></div>
+        <div class="kpi"><span class="kpi-label">Hit rate</span><span class="kpi-value" id="kpi-hitrate">&#8212;</span></div>
         <div class="kpi"><span class="kpi-label">Exact hits</span><span class="kpi-value" id="kpi-exact">0</span></div>
         <div class="kpi"><span class="kpi-label">Semantic hits</span><span class="kpi-value" id="kpi-semantic">0</span></div>
         <div class="kpi"><span class="kpi-label">Misses</span><span class="kpi-value" id="kpi-misses">0</span></div>
@@ -77,50 +79,53 @@
       </div>
     </section>
 
-    <section aria-label="Latency" class="panel">
-      <h2 class="panel-title">Cache-hit latency <span class="panel-sub">(last 100 events)</span></h2>
+    <!-- ============ instrument band: latency ============ -->
+    <section class="panel panel-band" aria-label="Latency">
+      <div class="panel-head">
+        <h2 class="panel-title">Latency <span class="panel-sub">(last <span id="lat-n" class="mono">0</span> events)</span></h2>
+        <span class="panel-sub">updated <time id="updated-at">&#8212;</time></span>
+      </div>
       <dl class="latency-row">
-        <div><dt>p50</dt><dd id="lat-p50">—</dd></div>
-        <div><dt>p90</dt><dd id="lat-p90">—</dd></div>
-        <div><dt>p95</dt><dd id="lat-p95">—</dd></div>
-        <div><dt>p99</dt><dd id="lat-p99">—</dd></div>
-        <div><dt>max</dt><dd id="lat-max">—</dd></div>
-        <div><dt>n</dt><dd id="lat-n">0</dd></div>
+        <div><dt>p50</dt><dd id="lat-p50" class="mono">&#8212;</dd></div>
+        <div><dt>p90</dt><dd id="lat-p90" class="mono">&#8212;</dd></div>
+        <div><dt>p95</dt><dd id="lat-p95" class="mono">&#8212;</dd></div>
+        <div><dt>p99</dt><dd id="lat-p99" class="mono">&#8212;</dd></div>
+        <div><dt>max</dt><dd id="lat-max" class="mono">&#8212;</dd></div>
       </dl>
     </section>
 
-    <section aria-label="Recent events" class="panel">
+    <!-- ============ the unified log ============ -->
+    <section class="panel panel-log" aria-label="Request and response log">
       <div class="panel-head">
-        <h2 class="panel-title">Recent events</h2>
-        <span class="panel-sub">newest first · updated <time id="updated-at">—</time></span>
+        <h2 class="panel-title">Requests &amp; responses</h2>
+        <span class="panel-sub">
+          newest first &#183; every request through the proxy &#183; expand a row for the full answer
+          <button id="reset-btn" type="button" class="btn btn-quiet"
+            title="Zero the counters and the event feed (POST /stats/reset) — cache documents are kept">Reset counters</button>
+        </span>
       </div>
-      <p id="empty-state" class="empty-state">
-        No requests yet — send a chat completion, see
-        <a href="/docs/plan.md">plan.md §7</a>.
-      </p>
-      <table id="events-table" class="events-table" hidden>
-        <caption>Recent cache events (newest 100, newest first)</caption>
-        <thead>
-          <tr>
-            <th scope="col">Time</th>
-            <th scope="col">Status</th>
-            <th scope="col">Distance</th>
-            <th scope="col">Latency</th>
-            <th scope="col">Breakdown</th>
-            <th scope="col">Prompt</th>
-          </tr>
-        </thead>
-        <tbody id="events-body"></tbody>
-      </table>
-    </section>
 
-    <footer class="footer">
-      <span>llm-cache · offline · no external requests · </span>
-      <a href="/">API root</a><span> · </span>
-      <a href="/stats">/stats JSON</a><span> · </span>
-      <a href="/healthz">/healthz</a>
-    </footer>
+      <p id="log-empty" class="empty-state">
+        No requests yet. Send one above, or press <b>Run the demo</b> &#8212;
+        three requests make the whole thesis visible:
+        <b>miss</b> &#8594; <b>exact&#8209;hit</b> &#8594; <b>semantic&#8209;hit</b>.
+      </p>
+
+      <div class="log-head" aria-hidden="true">
+        <span>Time</span><span>Status</span><span>Dist</span><span>Latency</span>
+        <span class="cell-break">Overhead</span><span>Prompt</span><span class="cell-twisty"></span>
+      </div>
+      <div id="log" class="log" role="log" aria-label="Recent requests and responses" aria-live="off"></div>
+    </section>
   </main>
+
+  <footer class="footer">
+    <span>llm-cache &#183; fully offline &#183; no external requests &#183; </span>
+    <a href="/">API root</a><span> &#183; </span>
+    <a href="/stats">/stats JSON</a><span> &#183; </span>
+    <a href="/healthz">/healthz</a><span> &#183; </span>
+    <span class="footer-note">percentiles over the last 100 events</span>
+  </footer>
 
   <script type="module" src="/dashboard/app.js"></script>
 </body>

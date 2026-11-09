@@ -92,6 +92,7 @@ async def chat_completions(
                 "error",
                 latency_ms=(time.perf_counter() - started) * 1000,
                 model=body.get("model"),
+                prompt=_last_user_text_safe(body),
                 reason=str(exc),
             )
             raise HTTPException(status_code=exc.status or 502, detail=str(exc)) from exc
@@ -156,6 +157,7 @@ async def chat_completions(
             redis_ms=redis_ms,
             prompt=prompt,
             response=_answer_text(json.loads(similar["response"])),
+            source_prompt=similar.get("prompt"),
         )
         headers = _cache_headers(
             "semantic-hit", latency_ms, similarity=similar.get("similarity"),
@@ -172,6 +174,7 @@ async def chat_completions(
             "error",
             latency_ms=(time.perf_counter() - started) * 1000,
             model=model,
+            prompt=prompt,
             reason=str(exc),
         )
         raise HTTPException(status_code=exc.status or 502, detail=str(exc)) from exc
@@ -286,6 +289,7 @@ async def record_demo_event(
         redis_ms=body.get("redis_ms", 1),
         prompt=body.get("prompt", "demo prompt"),
         response=body.get("response"),
+        source_prompt=body.get("source_prompt"),
     )
     return JSONResponse(request.app.state.store.get_stats())
 
@@ -293,8 +297,11 @@ async def record_demo_event(
 def _last_user_text_safe(body: dict[str, Any]) -> str:
     """Full last-user message, tolerant of malformed shapes (bypass path)."""
     try:
-        return last_user_text(body.get("messages") or []) or ""
-    except (TypeError, ValueError):
+        messages = body.get("messages")
+        if not isinstance(messages, list):
+            return ""
+        return last_user_text(messages) or ""
+    except (TypeError, ValueError, AttributeError):
         return ""
 
 

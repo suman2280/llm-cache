@@ -85,3 +85,56 @@ radius | rephrase hit rate | distractor false-hit rate | hit p50 (ms)
   answers to sampled requests (fixed with `tclass` pre-filter + tests).
 - `FT.INFO`-string error matching assumed RediSearch wording → replaced with
   `FT._LIST` existence check.
+
+---
+
+# Dashboard v2 — prototype gate + live validation (2026-11-09)
+
+The v2 UI redesign (docs/ui-plan.md v2) had one load-bearing assumption: a
+`<details>`-expandable, 100-row log that re-polls every second cannot be
+re-rendered wholesale without collapsing open rows, fighting scroll, and
+burning FLIP opportunities. The gate tested that assumption *before* the
+rewrite, as pure logic.
+
+## G1 — reconciliation gate (prototype-first)
+
+`dashboard/reconcile.js` + `reconcile.test.js` (Node built-in runner, zero
+dependencies) survive in the repo as the permanent proof. The planner diffs
+currently-rendered event ids against a fresh `/stats` payload and returns
+structural ops (insert/remove); repositioning is a position walk mirroring
+the DOM `insertBefore` each row.
+
+- **The exhaustive test earned its keep immediately:** the first planner
+  derived move-ops from index deltas, so an id present in both lists at a
+  *different* index produced a duplicate insert plus an orphan. Caught by
+  the "apply(plan) reproduces nextIds for every permutation pair" test
+  (120×120 = 14,400 pairs) — before any browser was opened.
+- 9/9 tests pass: steady-state prepends, ring overflow, mixed plans,
+  duplicate-id defense, convergence idempotence.
+
+## Live verification (real Redis 8 + Ollama 0.40.15, llama3.2:3b)
+
+- Contract v2 verified end-to-end through the proxy: `miss` 28.9 s →
+  `exact-hit` 0.6 ms → `semantic-hit` 15.1 ms (`d=0.058`), events carrying
+  id + full prompt + full response + source prompt.
+- **Id semantics:** `stats:event_seq` is INCR-per-event and deliberately
+  survives `POST /stats/reset` (asserted in unit + live integration tests) —
+  ids must stay unique across resets or row reconciliation breaks.
+- **Pre-v2 leftovers:** the Redis ring still held 3 events from the old
+  schema (no `id`); the dashboard skips id-less events rather than churning
+  them every poll — they self-heal within 100 events. Not masked in the UI.
+- **CDP smoke (`scripts/ui_smoke.mjs`, real Chrome):** 7/7 — page renders
+  live `/stats`; `/stats` failure → `● stale` banner with last payload kept;
+  Run the demo performs the canonical `miss → exact-hit → semantic-hit`;
+  the semantic-hit row names its source prompt; expanded row shows the full
+  answer; KPI counters update without a manual refresh; **zero external
+  requests** (the offline claim, asserted in-browser).
+- **The bug the smoke caught:** the demo omitted `temperature` while the
+  composer sends `temperature: 0` — the request hash (which covers params)
+  differed, so "the exact same text" was a *semantic* hit served from itself
+  (`d=0.000`) instead of an exact-hit. Fixed: the demo sends `temperature:
+  0` explicitly. This is the hash design working as intended; it was the
+  demo that had to conform.
+- Static-file serving verified: `index.html`, `style.css`, `app.js`,
+  `reconcile.js` all 200 with correct MIME types (module imports need
+  `text/javascript`); Vite 8 dev server verified with proxy → one origin.
