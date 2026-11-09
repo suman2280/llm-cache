@@ -23,10 +23,12 @@
     --line-strong:oklch(41% 0.02 265);    /* structural lines */
 
     /* --- four text tiers; the gaps ARE the hierarchy ---------------------- */
+    /* (v2 contrast pass: faint/muted were unreadable next to the quiet
+       button — tiers bumped, 14% lightness steps keep them distinct) */
     --text:       oklch(93% 0.008 265);
-    --text-dim:   oklch(72% 0.012 265);
-    --text-muted: oklch(56% 0.014 265);
-    --text-faint: oklch(43% 0.014 265);
+    --text-dim:   oklch(78% 0.012 265);
+    --text-muted: oklch(66% 0.014 265);
+    --text-faint: oklch(56% 0.014 265);
 
     /* --- exactly one accent ------------------------------------------------*/
     --accent:      oklch(72% 0.15 255);
@@ -251,10 +253,15 @@
   }
   .btn-demo:hover:not(:disabled) { border-color: var(--accent); background: color-mix(in oklab, var(--accent) 24%, var(--surface)); }
   .btn-quiet {
-    background: transparent; border-color: transparent; color: var(--text-muted);
-    font-size: 0.76rem; font-weight: 500; padding: 0.25rem 0.5rem;
+    background: transparent; border-color: var(--line); color: var(--text-dim);
+    font-size: 0.76rem; font-weight: 500; padding: 0.25rem 0.6rem;
   }
-  .btn-quiet:hover:not(:disabled) { color: var(--text); border-color: var(--line); background: var(--surface-2); }
+  .btn-quiet:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); background: var(--surface-2); }
+  .btn-danger {
+    background: var(--bad); border-color: var(--bad);
+    color: oklch(18% 0.03 265); font-weight: 650;
+  }
+  .btn-danger:hover:not(:disabled) { filter: brightness(1.12); background: var(--bad); border-color: var(--bad); }
 
   /* ----------------------------------------------------------------- chips */
   .chip {
@@ -282,7 +289,7 @@
   /* ------------------------------------------------------------------ KPIs */
   .kpis {
     display: grid; gap: 0.6rem;
-    grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
   }
   .kpi {
     background: var(--bg);
@@ -290,18 +297,27 @@
     border-radius: var(--radius-sm);
     padding: 0.55rem 0.7rem 0.6rem;
     box-shadow: var(--top-light);
+    text-align: center;
   }
   .kpi-label {
     display: block;
     font-size: 0.64rem; font-weight: 600; letter-spacing: 0.08em;
     text-transform: uppercase; color: var(--text-faint);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    /* wrap instead of truncate ("INFERENCES AV…"); two lines reserved so
+       every tile's value sits on the same baseline */
+    min-height: 1.6rem;
+    white-space: normal;
+    text-wrap: balance;
   }
   .kpi-value {
     display: block; margin-top: 0.15rem;
     font-size: 1.45rem; font-weight: 650; letter-spacing: -0.02em;
     font-variant-numeric: tabular-nums;
   }
+
+  /* band panels: center the tiles and the latency pairs in their boxes */
+  .panel-band .latency-row { justify-content: center; }
+  .panel-band .latency-row > div { justify-items: center; }
 
   /* --------------------------------------------------------------- latency */
   .latency-row { display: flex; flex-wrap: wrap; gap: 0.6rem 2rem; }
@@ -316,6 +332,25 @@
     border: 1px dashed var(--line); border-radius: var(--radius-sm);
   }
   .empty-state b { color: var(--text-dim); }
+
+  /* ------------------------------------------------- confirmation dialog */
+  /* Native <dialog>: focus trap, Esc-to-cancel, top-layer — free a11y. */
+  .confirm {
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: var(--top-light), 0 24px 48px oklch(0% 0 0 / 0.5);
+    padding: 1.35rem 1.4rem 1.15rem;
+    width: min(24rem, calc(100% - 2rem));
+  }
+  .confirm::backdrop {
+    background: oklch(12% 0.02 265 / 0.62);
+    backdrop-filter: blur(3px);
+  }
+  .confirm-title { font-size: 1rem; font-weight: 650; letter-spacing: -0.01em; margin-bottom: 0.35rem; }
+  .confirm-message { color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1.15rem; }
+  .confirm-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
 
   /* -------------------------------------------------------------- the log */
   .log-head, .row-summary {
@@ -383,6 +418,9 @@
   .qa-text {
     font-size: 0.88rem; line-height: 1.55; color: var(--text);
     white-space: pre-wrap; word-break: break-word;
+    /* a long answer scrolls inside the row instead of pushing the feed
+       down ten screens */
+    max-height: 18rem; overflow-y: auto;
   }
   .qa-src, .qa-reason { font-size: 0.78rem; color: var(--text-muted); }
   .qa-src b, .qa-reason b { color: var(--text-dim); font-weight: 600; }
@@ -405,6 +443,12 @@
     @keyframes row-flash {
       0%   { background: color-mix(in oklab, var(--accent) 20%, transparent); }
       100% { background: transparent; }
+    }
+
+    /* confirm dialog entrance (native <dialog> top-layer) */
+    .confirm[open] { animation: dialog-in var(--dur-3) var(--ease-out); }
+    @keyframes dialog-in {
+      from { opacity: 0; transform: translateY(10px) scale(0.98); }
     }
 
     /* View Transitions: the browser FLIPs the log on re-render */

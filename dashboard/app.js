@@ -93,7 +93,8 @@ function tickerFrame(now) {
   for (const t of tickers) {
     const p = Math.min(1, (now - t.t0) / t.dur);
     const e = 1 - Math.pow(1 - p, 3); // ease-out-cubic
-    t.el.textContent = t.fmt(t.from + (t.to - t.from) * e);
+    // clamp at zero: an early frame can round to -0 ("-0" on screen)
+    t.el.textContent = t.fmt(Math.max(0, t.from + (t.to - t.from) * e));
     if (p === 1) tickers.delete(t);
   }
   rafId = tickers.size ? requestAnimationFrame(tickerFrame) : 0;
@@ -208,7 +209,11 @@ function renderLog(events) {
     apply();
     return;
   }
-  document.startViewTransition(apply);
+  // A new transition skips the previous one by design (rapid polls); the
+  // resulting AbortError must not surface as an unhandled rejection.
+  const transition = document.startViewTransition(apply);
+  transition.ready.catch(() => {});
+  transition.finished.catch(() => {});
 }
 
 function applyLog(events) {
@@ -286,14 +291,7 @@ function buildRow(ev) {
   if (ev.prompt) {
     detail.append(qaBlock("question", ev.prompt));
   }
-  if (ev.response) {
-    detail.append(qaBlock("answer", ev.response));
-  } else if (ev.status === "error") {
-    const p = document.createElement("p");
-    p.className = "qa-src";
-    p.textContent = "no answer — the request failed before one existed";
-    detail.appendChild(p);
-  }
+  // served-from sits directly under the question it answers, above the answer
   if (ev.status === "semantic-hit" && ev.source_prompt) {
     const src = document.createElement("p");
     src.className = "qa-src";
@@ -302,6 +300,14 @@ function buildRow(ev) {
     b.textContent = ev.source_prompt;
     src.appendChild(b);
     detail.appendChild(src);
+  }
+  if (ev.response) {
+    detail.append(qaBlock("answer", ev.response));
+  } else if (ev.status === "error") {
+    const p = document.createElement("p");
+    p.className = "qa-src";
+    p.textContent = "no answer — the request failed before one existed";
+    detail.appendChild(p);
   }
   if (ev.reason) {
     const r = document.createElement("p");
@@ -505,8 +511,36 @@ demoBtn.addEventListener("click", async () => {
 });
 
 // -------------------------------------------------------------------- reset
-function resetCounters() {
-  if (!confirm("Reset all counters and clear the event feed? (Cache documents are kept.)")) return;
+// Native <dialog> instead of window.confirm(): styled to match the page,
+// and the focus trap / Esc / backdrop semantics come free.
+function confirmAction(title, message, okLabel) {
+  const dialog = $("confirm-dialog");
+  $("confirm-title").textContent = title;
+  $("confirm-message").textContent = message;
+  $("confirm-ok").textContent = okLabel;
+  return new Promise((resolve) => {
+    const done = (value) => resolve(value);
+    $("confirm-ok").onclick = () => {
+      dialog.close();
+      done(true);
+    };
+    $("confirm-cancel").onclick = () => {
+      dialog.close();
+      done(false);
+    };
+    dialog.oncancel = () => done(false); // Esc / backdrop click
+    dialog.onclose = () => done(false);  // safety net (any other close)
+    dialog.showModal();
+  });
+}
+
+async function resetCounters() {
+  const ok = await confirmAction(
+    "Reset counters?",
+    "Zero all counters and clear the event feed. Cached answers are kept — only the numbers and the log reset.",
+    "Reset counters",
+  );
+  if (!ok) return;
   rows.forEach((row) => row.remove());
   rows.clear();
   lastLogSignature = "";

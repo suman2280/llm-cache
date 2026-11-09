@@ -46,6 +46,7 @@ try {
 
   // the offline claim: nothing may leave the origin
   const external = [];
+  page.on("pageerror", (err) => console.log("PAGEERROR:", err.message));
   page.on("request", (req) => {
     if (!req.url().startsWith("http://localhost") && !req.url().startsWith("data:")) {
       external.push(req.url());
@@ -103,6 +104,29 @@ try {
   // 6. KPI counters moved without a manual refresh
   const requests = await page.$eval("#kpi-requests", (el) => Number(el.dataset.value));
   check("KPI counters updated", requests > before, `requests=${requests}`);
+
+  // shots for the record: the money moment (expanded row) and the dialog
+  await page.screenshot({ path: "/tmp/llm-cache-dashboard.png", fullPage: true });
+
+  // 7. reset confirmation: styled native <dialog>; Esc cancels
+  await page.$eval("#reset-btn", (b) => b.click()); // DOM click: a scrolled page can park the button under the sticky header
+  await page.waitForSelector("#confirm-dialog[open]", { timeout: 5000 });
+  await page.screenshot({ path: "/tmp/llm-cache-dialog.png" });
+  await page.keyboard.press("Escape");
+  await new Promise((r) => setTimeout(r, 300));
+  const kept = await page.$eval("#kpi-requests", (el) => Number(el.dataset.value));
+  check("Esc cancels the reset dialog", kept === 3, `requests=${kept}`);
+
+  // 8. confirm path zeroes the counters and the log
+  await page.$eval("#reset-btn", (b) => b.click()); // DOM click: a scrolled page can park the button under the sticky header
+  await page.waitForSelector("#confirm-dialog[open]", { timeout: 5000 });
+  await page.click("#confirm-ok");
+  await page.waitForFunction(
+    () => Number(document.getElementById("kpi-requests").dataset.value) === 0,
+    { timeout: 10_000 },
+  );
+  const rowsLeft = await page.$$eval("#log .row", (r) => r.length);
+  check("confirm dialog zeroes counters + log", rowsLeft === 0, `rows=${rowsLeft}`);
 
   check("zero external requests (offline claim)", external.length === 0, external.slice(0, 2).join(", "));
 } finally {

@@ -127,6 +127,16 @@
     <span class="footer-note">percentiles over the last 100 events</span>
   </footer>
 
+  <!-- reset confirmation: native <dialog> = focus trap + Esc for free -->
+  <dialog id="confirm-dialog" class="confirm" aria-labelledby="confirm-title">
+    <h2 id="confirm-title" class="confirm-title">Reset counters?</h2>
+    <p id="confirm-message" class="confirm-message"></p>
+    <div class="confirm-actions">
+      <button id="confirm-cancel" type="button" class="btn">Cancel</button>
+      <button id="confirm-ok" type="button" class="btn btn-danger">Reset</button>
+    </div>
+  </dialog>
+
   <script type="module" src="/dashboard/app.js"></script>
 </body>
 </html>
