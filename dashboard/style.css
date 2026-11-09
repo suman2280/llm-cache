@@ -343,6 +343,15 @@
     box-shadow: var(--top-light), 0 24px 48px oklch(0% 0 0 / 0.5);
     padding: 1.35rem 1.4rem 1.15rem;
     width: min(24rem, calc(100% - 2rem));
+    /* the UA centers modal dialogs with `margin: auto`, but the reset
+       layer's `* { margin: 0 }` (an author layer) beats the UA sheet —
+       without this the dialog pins to the top-left corner */
+    position: fixed;
+    inset: 0;
+    margin: auto;
+    height: fit-content;
+    max-height: calc(100% - 2rem);
+    overflow: auto;
   }
   .confirm::backdrop {
     background: oklch(12% 0.02 265 / 0.62);
