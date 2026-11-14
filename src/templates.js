@@ -84,47 +84,99 @@ const quota = (p) => {
 };
 
 /**
- * Compare two services on a fixed dimension from a matrix.
- * Deliberately asymmetric: comparing A-to-B is not the same as B-to-A.
+ * Per-service facts, so a comparison can be composed in EITHER direction
+ * without swapping facts onto the wrong service. Comparing A to B and B to A
+ * are genuinely different questions and must produce different answers --
+ * otherwise the cache would happily reuse one for the other.
  */
-const MATRIX = {
-  "s3|dynamodb": {
-    storage_model: "S3 stores objects (files up to 5 TB) in buckets; DynamoDB stores items (max 400 KB) in tables with a primary key.",
-    consistency: "S3 offers strong read-after-write consistency for new objects; DynamoDB offers strongly consistent reads (and eventually consistent reads that cost less).",
-    lookup: "S3 looks objects up by key inside a bucket; DynamoDB looks items up by primary key, or by secondary index.",
+const SERVICE_FACTS = {
+  s3: {
+    label: "S3",
+    storage: "objects (files up to 5 TB) inside buckets",
+    address: "a key inside a bucket",
+    consistency: "strong read-after-write consistency for new objects",
+    lookup: "by key, within a bucket",
+    price: "storage per GB-month, plus per-request and transfer charges",
+    scale: "grows by adding buckets and prefixes, with partition limits",
+    state: "objects are durable and independent of any running server",
   },
-  "ec2|lambda": {
-    pricing: "EC2 bills for the instance hours you reserve or run; Lambda bills per request and per GB-second actually used.",
-    scaling: "EC2 scales when you add instances (auto-scaling groups); Lambda scales per request automatically, up to your concurrency quota.",
-    state: "EC2 instances are stateful and long-lived; Lambda functions are stateless and short-lived.",
+  dynamodb: {
+    label: "DynamoDB",
+    storage: "items (up to 400 KB) inside tables with a primary key",
+    address: "a primary key, or a secondary index",
+    consistency: "strongly consistent reads, or eventually consistent reads that cost less",
+    lookup: "by primary key, or by secondary index",
+    price: "per request and per GB of stored data",
+    scale: "scales by partitioning the table across shards",
+    state: "items are durable and independent of any running server",
+  },
+  ec2: {
+    label: "EC2",
+    storage: "virtual servers (instances), each with its own attached EBS volumes",
+    address: "an instance id or a private IP address",
+    consistency: "not applicable -- there is no shared data plane",
+    lookup: "not applicable -- you address the instance itself",
+    price: "per instance-hour for the time it runs, plus volumes and networking",
+    scale: "by adding instances, typically through an auto-scaling group",
+    state: "instances are stateful and long-lived",
+  },
+  lambda: {
+    label: "Lambda",
+    storage: "short-lived, stateless function invocations",
+    address: "an event source that triggers the function",
+    consistency: "not applicable -- invocations are independent",
+    lookup: "not applicable -- you address the function, not stored data",
+    price: "per request and per GB-second actually used",
+    scale: "per request, automatically, up to the concurrency quota",
+    state: "functions are stateless; state belongs in a service like S3 or DynamoDB",
+  },
+};
+
+/** Dimensions are composed from the two services' facts, in order. */
+const DIMENSIONS = {
+  storage_model: {
+    question: "what each one stores",
+    compose: (a, b) => `${a.label} stores ${a.storage}; ${b.label} stores ${b.storage}.`,
+  },
+  consistency: {
+    question: "how consistent reads are",
+    compose: (a, b) => `${a.label} offers ${a.consistency}; ${b.label} offers ${b.consistency}.`,
+  },
+  lookup: {
+    question: "how you address the data",
+    compose: (a, b) => `You address ${a.label} data by ${a.address}, and ${b.label} data by ${b.address}.`,
+  },
+  pricing: {
+    question: "how it is billed",
+    compose: (a, b) => `${a.label} is billed ${a.price}; ${b.label} is billed ${b.price}.`,
+  },
+  scaling: {
+    question: "how it scales",
+    compose: (a, b) => `${a.label} scales ${a.scale}; ${b.label} scales ${b.scale}.`,
+  },
+  state: {
+    question: "how state is handled",
+    compose: (a, b) => `${a.label}: ${a.state}. ${b.label}: ${b.state}.`,
   },
 };
 
 const compare = (p) => {
-  const a = String(p.service_a || "").toLowerCase();
-  const b = String(p.service_b || "").toLowerCase();
-  const dim = String(p.dimension || "").toLowerCase();
-  const forward = MATRIX[`${a}|${b}`];
-  const reverse = MATRIX[`${b}|${a}`];
-  if (forward) {
-    const cell = forward[dim];
-    if (!cell) return { ok: false, why: `no data for dimension '${p.dimension}'` };
-    return {
-      ok: true,
-      answer: cell,
-      explanation: `Comparing ${a} to ${b} on ${dim}. Note the direction: comparing ${b} to ${a} is a different question with a different emphasis.`,
-    };
+  const a = SERVICE_FACTS[String(p.service_a || "").toLowerCase()];
+  const b = SERVICE_FACTS[String(p.service_b || "").toLowerCase()];
+  if (!a || !b) {
+    return { ok: false, why: `no comparison recorded for ${p.service_a} vs ${p.service_b}` };
   }
-  if (reverse) {
-    const cell = reverse[dim];
-    if (!cell) return { ok: false, why: `no data for dimension '${p.dimension}'` };
-    return {
-      ok: true,
-      answer: cell,
-      explanation: `Comparing ${a} to ${b} on ${dim} (the reverse pair is recorded).`,
-    };
-  }
-  return { ok: false, why: `no comparison recorded for ${a} vs ${b}` };
+  const dim = DIMENSIONS[String(p.dimension || "").toLowerCase()];
+  if (!dim) return { ok: false, why: `no data for dimension '${p.dimension}'` };
+  const answer = dim.compose(a, b);
+  return {
+    ok: true,
+    answer,
+    explanation:
+      `Comparing ${a.label} to ${b.label} on ${dim.question}. ` +
+      `The direction matters: comparing ${b.label} to ${a.label} is a different question ` +
+      `and produces a different answer.`,
+  };
 };
 
 export const TEMPLATES = [

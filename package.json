@@ -10,7 +10,7 @@
     "demo": "node scripts/demo_preview.mjs",
     "bench:model": "node scripts/bench_model.mjs",
     "contract": "node scripts/check_api_contract.mjs",
-    "test": "node --test dashboard/",
+    "test": "node --test dashboard/ tests/",
     "check:dashboard": "python3 scripts/check_dashboard.py"
   },
   "devDependencies": {

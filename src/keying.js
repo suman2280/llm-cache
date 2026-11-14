@@ -237,16 +237,31 @@ export function symbolFingerprint(text) {
 /**
  * ASCII-safe header value. Non-ASCII and control bytes are percent-encoded so
  * the framework never raises UnicodeEncodeError while building the response.
+ *
+ * The limit applies to the ENCODED length, because percent-encoding expands:
+ * "…" is 1 character but 9 bytes of UTF-8, or "%E2%80%A6" after encoding.
+ * The result is always decodable: each non-ASCII character becomes one
+ * %XX per UTF-8 byte, and a literal "%" becomes %25.
  */
 export function asciiHeaderValue(value, limit = 100) {
   if (value === undefined || value === null) return "";
-  let s = String(value);
-  if (s.length > limit) s = `${s.slice(0, limit - 1)}…`;
+  const s = String(value);
   let out = "";
   for (const ch of s) {
     const code = ch.codePointAt(0);
-    const ok = code >= 0x20 && code <= 0x7e;
-    out += ok && ch !== "%" ? ch : `%${code.toString(16).toUpperCase().padStart(2, "0")}`;
+    let token;
+    if (code >= 0x20 && code <= 0x7e) {
+      token = ch === "%" ? "%25" : ch;
+    } else {
+      token = [...Buffer.from(ch, "utf8")]
+        .map((b) => `%${b.toString(16).toUpperCase().padStart(2, "0")}`)
+        .join("");
+    }
+    if (out.length + token.length > limit) {
+      out += out.length + 3 <= limit ? "..." : "";
+      break;
+    }
+    out += token;
   }
   return out;
 }
@@ -254,6 +269,8 @@ export function asciiHeaderValue(value, limit = 100) {
 export function encodeEnvelope(envelope) {
   if (!envelope || Object.keys(envelope).length === 0) return "";
   const clean = {};
-  for (const f of ENVELOPE_FIELDS) if (envelope[f] !== undefined) clean[f] = envelope[f];
+  for (const f of [...ENVELOPE_FIELDS, ...OBJECT_FIELDS]) {
+    if (envelope[f] !== undefined) clean[f] = envelope[f];
+  }
   return Buffer.from(JSON.stringify(clean), "utf8").toString("base64url");
 }
