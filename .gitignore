@@ -1,19 +1,26 @@
-__pycache__/
-*.py[cod]
-.venv/
-*.egg-info/
-.pytest_cache/
-.ruff_cache/
-.env
-scratch/
-
-# dev-only Node tooling (dashboard HMR). Production serves the static files
-# from FastAPI; node/ never enters the runtime path.
+# Node (dashboard dev tooling). The dashboard itself has no build step.
 node_modules/
-dashboard/dist/
-dist/
 
-# benchmark raw artifacts (regenerable); results.md / results.json / the chart
-# are committed as exhibits
-results/baseline.json
-results/replay-*.json
+# Vite dev-server output (dev-only; production serves the source files).
+dashboard/dist/
+
+# Local state the rebuilt backend will create. Keep the working tree clean.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+data/
+logs/
+*.log
+
+# Secrets / local config
+.env
+.env.*
+!.env.example
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp

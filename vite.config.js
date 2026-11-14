@@ -1,18 +1,24 @@
 // DEV-ONLY. Vite serves dashboard/ with HMR during development and proxies
-// the API to the FastAPI app so the browser still sees ONE origin (no CORS
-// surface — same as production, where FastAPI mounts dashboard/ directly).
-// There is no production build: `uv run uvicorn llm_cache.app:app` serves
-// these exact files. See README ("no build step in production").
+// the API to the backend so the browser still sees ONE origin (no CORS
+// surface — same as production, where the app serves these exact files).
+// There is no production build: the app serves these files as they are.
+//
+// The proxy target is the port the backend listens on (default 8000).
+// Override with BACKEND_PORT=xxxx npm run dev when the backend runs elsewhere.
+//
+// See docs/UI-CONTRACT.md — the frozen UI is the backend's spec.
 import { defineConfig } from "vite";
+
+const backend = `http://localhost:${process.env.BACKEND_PORT || 8000}`;
 
 export default defineConfig({
   root: "dashboard",
   server: {
     port: 5173,
     proxy: {
-      "/stats": "http://localhost:8000",
-      "/v1": "http://localhost:8000",
-      "/healthz": "http://localhost:8000",
+      "/stats": backend,
+      "/v1": backend,
+      "/healthz": backend,
     },
   },
 });
