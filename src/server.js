@@ -298,6 +298,22 @@ export async function build() {
     return { chapter_code: req.params.chapterCode, removed };
   });
 
+  /**
+   * Purge every cache document AND the vector index.
+   *
+   * Both stores must be cleared together: leaving SQLite populated while the
+   * vector index is empty produces a cache that exact-hits but cannot
+   * semantically hit -- a confusing half-state. The counters and the event
+   * ring are untouched (that is what /stats/reset is for).
+   */
+  app.post("/cache/purge", async (req, reply) => {
+    if (!adminOk(req)) return reply.code(404).send({ detail: "not found" });
+    const documents = db().countEntries();
+    db().db.exec("DELETE FROM cache_entries");
+    const vectorsPurged = await vectors.purgeIndex();
+    return { purged_documents: documents, purged_vectors: vectorsPurged };
+  });
+
   // ---- the SOP's near-duplicate gate ---------------------------------
   // The same embedding machinery the semantic tier uses, repurposed for
   // REJECTION rather than reuse (SOP lines 314 and 604).

@@ -1,33 +1,75 @@
-// UI smoke test — the demo moment, driven in a real browser (docs/validation.md G-live).
+// UI smoke test — the demo moment, driven in a real browser.
 //
 //   npm i -D puppeteer-core          # dev-only, one time
 //   node scripts/ui_smoke.mjs [url]  # default http://localhost:8000/dashboard/
 //
-// Requires the proxy running (uv run uvicorn llm_cache.app:app --port 8000)
-// with Redis + Ollama up. Exercises: page renders from live /stats, the
-// Run-the-demo button performs miss -> exact-hit -> semantic-hit through
-// the real cache, a row expands to the full answer, and no external
-// network requests are made (the offline claim).
+// Requires the app running (node src/main.js) with Redis up. Exercises: page
+// renders from live /stats, the Run-the-demo button performs
+// miss -> exact-hit -> semantic-hit through the real cache, a row expands to
+// the full answer, and no external network requests are made (the offline
+// claim).
+//
+// Chrome: set CHROME_PATH, or let it find the puppeteer-managed build.
 
-import { readFileSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
+
+import { join } from "node:path";
+import { homedir } from "node:os";
 import puppeteer from "puppeteer-core";
 
 const URL = process.argv[2] || "http://localhost:8000/dashboard/";
-const CHROME = process.env.CHROME_PATH || "/usr/bin/google-chrome-stable";
+
+/** Locate a Chrome: explicit env, a system install, or the puppeteer cache. */
+function findChrome() {
+  if (process.env.CHROME_PATH) return process.env.CHROME_PATH;
+  const system = [
+    "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",
+    "/usr/bin/chromium", "/usr/bin/chromium-browser",
+  ];
+  for (const p of system) if (existsSync(p)) return p;
+  const cache = join(homedir(), ".cache", "puppeteer", "chrome");
+  if (existsSync(cache)) {
+    // the layout is either <cache>/<version>/chrome-linux64/chrome (puppeteer's
+    // own) or <cache>/chrome-linux64/chrome (a manual unzip of the same zip)
+    for (const dir of readdirSync(cache)) {
+      for (const rel of [
+        join(dir, "chrome-linux64", "chrome"),
+        join("chrome-linux64", "chrome"),
+        join(dir, "chrome-linux", "chrome"),
+      ]) {
+        const p = join(cache, rel);
+        if (existsSync(p)) return p;
+      }
+    }
+  }
+  return null;
+}
+const CHROME = findChrome();
+if (!CHROME) {
+  console.error("No Chrome found. Install one, or: npx puppeteer browsers install chrome");
+  console.error("Then re-run, optionally with CHROME_PATH=/path/to/chrome");
+  process.exit(2);
+}
 
 // Deterministic precondition: the first demo step must be a *miss*, so the
-// cache starts empty and counters start at zero. (On a warm cache the demo
-// reports whatever the cache says — truthful, but not the canonical three.)
+// cache starts empty and counters start to zero. (On a warm cache the demo
+// reports whatever the cache says - truthful, but not the canonical three.)
+//
+// BOTH stores must be cleared: the documents live in SQLite and the vectors in
+// Redis. Clearing only the vectors leaves a cache that exact-hits but cannot
+// semantically hit.
+const ADMIN = process.env.ADMIN_TOKEN || "dev-token";
 try {
-  execSync(
-    "docker exec llm-cache-redis redis-cli --scan --pattern 'sem:*' | " +
-      "xargs -r docker exec -i llm-cache-redis redis-cli UNLINK",
-    { stdio: "ignore" },
-  );
+  const purge = await fetch("http://localhost:8000/cache/purge", {
+    method: "POST",
+    headers: { "X-Admin-Token": ADMIN, "Content-Type": "application/json" },
+    body: "{}",
+  });
+  if (!purge.ok) throw new Error(`purge returned ${purge.status}`);
   await fetch("http://localhost:8000/stats/reset", { method: "POST" });
-} catch {
-  console.log("note: could not purge cache/reset counters — the canonical sequence may not hold");
+} catch (err) {
+  console.log(`note: could not purge the cache / reset counters (${err.message}) - ` +
+    "the canonical sequence may not hold");
 }
 
 const results = [];
@@ -63,13 +105,36 @@ try {
   const model = await page.$eval("#hero-model", (el) => el.textContent);
   check("page renders live /stats (model in hero)", model && model !== "—", model);
 
-  // 2. kill the backend -> stale banner, last payload kept (honesty under failure)
-  await page.setOfflineMode(true);
-  await new Promise((r) => setTimeout(r, 2500));
+  // 2. the backend stops answering -> stale banner, last payload kept
+  //    (honesty under failure).
+  //
+  //    NOTE: Chrome's setOfflineMode() does NOT block requests to localhost --
+  //    an in-page fetch still returned 200 while "offline". So the failure is
+  //    injected at the network layer instead: /stats is aborted, which is what
+  //    the dashboard's catch branch actually has to survive.
+  await page.setRequestInterception(true);
+  const blocker = (req) => {
+    if (req.url().includes("/stats")) req.abort("failed").catch(() => {});
+    else req.continue().catch(() => {});
+  };
+  page.on("request", blocker);
+  await page.waitForFunction(
+    () => !document.getElementById("stale-banner")?.hidden,
+    { timeout: 15_000 },
+  );
   const bannerVisible = await page.$eval("#stale-banner", (el) => !el.hidden);
   const chipStale = await page.$eval("#live-chip", (el) => el.textContent.includes("stale"));
-  await page.setOfflineMode(false);
-  check("stale state on /stats failure", bannerVisible && chipStale);
+  const keptPayload = await page.$eval("#kpi-requests", (el) => el.textContent);
+  check("stale state on /stats failure", bannerVisible && chipStale,
+    `chip=${await page.$eval("#live-chip", (el) => el.textContent)}`);
+  check("last payload kept while stale", keptPayload !== "—", `kpi-requests=${keptPayload}`);
+
+  // restore normal service
+  page.off("request", blocker);
+  await page.setRequestInterception(false);
+  await new Promise((r) => setTimeout(r, 1500));
+  const chipLive = await page.$eval("#live-chip", (el) => el.textContent.includes("live"));
+  check("recovers to live when /stats returns", chipLive);
 
   // 3. the demo: three real requests through the real cache
   const before = await page.$$eval("#log .row", (rows) => rows.length);

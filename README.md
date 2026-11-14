@@ -7,6 +7,10 @@ The premise: *inference is the expensive part, and most of it is avoidable.* A 7
 a CPU box takes **6–20 seconds** per answer. A cache hit on this project takes **0.4–14 ms**.
 The whole design is about making the second number the common one.
 
+![the dashboard, live against the new backend](docs/images/dashboard.png)
+
+*One run of the demo, live: **p50 5 ms** against **p99 24.7 s**. The gap is the product.*
+
 This is being built as the **preview for the JEE AI Tutor content-creation SOP**
 ([`docs/REBUILD.md`](./docs/REBUILD.md)). The dashboard — kept from the previous build
 because it was good — is **frozen**, and the backend is written to its contract
@@ -158,16 +162,18 @@ Then open <http://localhost:8000/dashboard/>.
 | `npm run seed` | seed the demonstration corpus |
 | `npm run contract` | assert the backend satisfies the frozen UI's contract |
 | `npm run bench:model` | measure the inference layer (throughput, latency, memory, refusal) |
-| `npm test` | the dashboard's reconciliation tests (9, no browser) |
+| `npm test` | 36 tests: the dashboard's reconciliation planner + the backend's keying and templates |
 | `npm run check:dashboard` | every id `app.js` reaches for exists in `index.html` |
+| `node scripts/ui_smoke.mjs` | drive the dashboard in a real Chrome (11 checks) |
+| `node scripts/screenshot.mjs` | capture the dashboard for the docs |
 
-### The acceptance gate
+### The acceptance gates
 
 The dashboard is frozen, so the backend is checked against it mechanically:
 
 ```bash
 node scripts/check_api_contract.mjs http://localhost:8000
-# 43/43 contract checks pass.
+# 38/38 contract checks pass.
 # The frozen dashboard will work against this backend unchanged.
 ```
 
@@ -175,6 +181,18 @@ It asserts the `/stats` shape, the `X-Cache-*` headers on all five statuses, tha
 non-ASCII prompt does **not** 500, that the exact tier respects every answer-affecting
 parameter, that a served hit mints a fresh `id`, that event ids survive `/stats/reset`, and
 that `x-cache-source-prompt` is ASCII-safe.
+
+And in a real browser, against the real backend:
+
+```bash
+npx puppeteer browsers install chrome   # once
+node scripts/ui_smoke.mjs
+# 11/11 checks passed
+```
+
+which drives the dashboard's **Run the demo** button through
+`miss → exact-hit → semantic-hit`, checks the row expands to the full answer, checks the
+stale banner when `/stats` stops answering, and asserts **zero external requests**.
 
 ---
 
