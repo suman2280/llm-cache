@@ -194,25 +194,41 @@ export function difficultyBand(v) {
 }
 
 /**
- * Fingerprint of the non-alphanumeric glyphs in a text.
+ * Fingerprint of the tokens that change the MEANING of a prompt.
  *
  * A generic sentence embedder cannot tell `⊂` from `∪`, or `15%` from `25%`:
  * measured on the previous build, 10 of 11 maths prompt pairs needing different
  * answers landed inside the shipped 0.20 cosine radius. This is the cheap,
- * deterministic guard that runs BEFORE the expensive verifier: if the glyph
- * multisets differ, the two prompts are not interchangeable.
+ * deterministic guard that runs BEFORE the expensive verifier: if the
+ * meaning-bearing tokens differ, the two prompts are not interchangeable.
+ *
+ * Captured: digit runs (730 vs 160), non-ASCII glyphs (∈ vs ∉, ∪ vs ∩, ≤ vs ≥)
+ * and structural/operator characters (= < > + - * / % ^ { } [ ] ( ) |).
+ *
+ * NOT captured: letters, whitespace, and sentence punctuation (. , ; : ? ! " ').
+ * Punctuation must be excluded or a trailing "?" versus "." -- pure prose
+ * punctuation -- would block a legitimate reuse, which is the opposite of what
+ * this guard is for.
  */
+const SENTENCE_PUNCT = new Set([".", ",", ";", ":", "?", "!", '"', "'"]);
+
 export function symbolFingerprint(text) {
   if (!text) return "";
   const counts = new Map();
+  const bump = (tok) => counts.set(tok, (counts.get(tok) || 0) + 1);
+
+  // digit runs: "730" is one token, "1,2,3" is three
+  for (const m of text.matchAll(/\d+(?:\.\d+)?/g)) bump(`n:${m[0]}`);
+
   for (const ch of text) {
-    // anything that is not a plain ASCII letter/digit/space
-    if (ch.charCodeAt(0) > 127 || /[^A-Za-z0-9\s]/.test(ch)) {
-      counts.set(ch, (counts.get(ch) || 0) + 1);
-    }
+    if (/\s/.test(ch)) continue;
+    if (/[A-Za-z0-9]/.test(ch)) continue;
+    if (SENTENCE_PUNCT.has(ch)) continue;
+    bump(`s:${ch.codePointAt(0).toString(16)}`);
   }
+
   return [...counts.entries()].sort(([a], [b]) => (a < b ? -1 : 1))
-    .map(([c, n]) => `${c.codePointAt(0).toString(16)}:${n}`).join(",");
+    .map(([t, n]) => `${t}:${n}`).join(",");
 }
 
 // ---------------------------------------------------------------------------

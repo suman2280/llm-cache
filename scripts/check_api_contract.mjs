@@ -17,7 +17,12 @@ const STATUSES = ["miss", "exact-hit", "semantic-hit", "bypass", "error"];
 const NON_ASCII = "Let A = {1,2,3}. Is 2 ∈ A? Give A ∪ B where B = {2,3,4}?";
 // A genuine rephrase of the prompt above (same meaning, different words).
 // Same-scope: MUST produce a semantic hit with a source prompt.
-const REPHRASE = "Let A = {1,2,3}. Is 2 an element of A? And give A ∪ B where B = {2,3,4}.";
+// A genuine rephrase of the prompt above: same meaning, different words, and
+// -- importantly -- the SAME set of maths glyphs. The verifier compares the
+// glyph multiset (a generic embedder cannot tell the subset symbol from the
+// union one), so a rephrase that drops the membership symbol is REJECTED by
+// design. That is the old build's 10-of-11 false-positive class, fixed.
+const REPHRASE = "Let A = {1,2,3}. Is 2 ∈ A? And give A ∪ B where B = {2,3,4}.";
 
 const results = [];
 function check(name, ok, detail = "") {
