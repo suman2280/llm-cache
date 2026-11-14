@@ -1,23 +1,26 @@
-# Node (dashboard dev tooling). The dashboard itself has no build step.
+# Node (dashboard dev tooling + the backend).
 node_modules/
 
 # Vite dev-server output (dev-only; production serves the source files).
 dashboard/dist/
 
-# Local state the rebuilt backend will create. Keep the working tree clean.
-*.db
-*.db-wal
-*.db-shm
-*.sqlite
-*.sqlite3
-data/
-logs/
-*.log
+# Local model weights. Large, machine-specific, and INSTALLABLE:
+#   bash scripts/setup_model.sh
+models/
 
-# Secrets / local config
+# Build output from scripts/setup_model.sh. Kept outside /tmp on purpose: a
+# reboot otherwise destroys ~10 minutes of compile.
+tools/
+
+# Credentials / local config
 .env
 .env.*
 !.env.example
+
+# Local state the backend creates
+data/
+logs/
+*.log
 
 # Editor / OS noise
 .DS_Store

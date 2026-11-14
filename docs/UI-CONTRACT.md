@@ -19,7 +19,7 @@ Run the checker: `node scripts/check_api_contract.mjs http://localhost:8000`
 |---|---|---|---|
 | `POST` | `/v1/chat/completions` | The one chat route. Body is an OpenAI-compatible completion request. | `app.js:387` |
 | `GET` | `/stats` | The dashboard's entire world. One poll per second by default. | `app.js:126` |
-| `POST` | `/stats/reset` | Zero counters + clear the event feed. Response must be `2xx`. | `app.js:547` |
+| `POST` | `/stats/reset` | Zero counters + clear the event feed. Response must be `2xx`. **Not admin-gated** — see below. | `app.js:547` |
 | `GET` | `/healthz` | Linked from the footer; also used by the old benchmark's server probe. | `index.html:126` |
 | `GET` | `/` | API root. Must return an object (the UI never reads it; keep it for humans). | `index.html:124` |
 
@@ -28,6 +28,20 @@ Run the checker: `node scripts/check_api_contract.mjs http://localhost:8000`
 for the modules). The UI makes **zero external requests**; a rebuild must not introduce any.
 
 **MUST** make all API paths same-origin as the dashboard (no CORS surface).
+
+### The one deliberate exception: `/stats/reset` is not admin-gated
+
+The dashboard's *Reset counters* button POSTs to `/stats/reset` with **no credentials**
+(`app.js:547`). Since the UI is frozen and that button is part of it, gating the route
+would break the shipped product.
+
+The exposure is small and bounded: it clears **counters and the event ring only**. It cannot
+touch a cache document, delete content, promote a review status, or invalidate anything.
+The endpoints that *can* do those things — `/cache/scope/:scope`, `/cache/chapter/:code`
+and `/content/records/:id/review` — **are** admin-gated and return 404 without
+`X-Admin-Token`.
+
+If the UI is ever unfrozen, gate this route too and pass the token from the client.
 
 ---
 

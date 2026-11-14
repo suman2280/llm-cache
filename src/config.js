@@ -1,0 +1,78 @@
+/**
+ * Runtime configuration. All LLM_* env vars; defaults work out of the box.
+ *
+ * The build is deliberately memory-lean. Anything that costs RAM is
+ * lazy-loaded and unloaded when idle -- see src/model.js and src/embedder.js.
+ */
+
+const REQUIRED = ["port", "redisUrl", "upstreamUrl", "modelIdleS"];
+
+const env = (k, d) => (process.env[k] === undefined || process.env[k] === "" ? d : process.env[k]);
+const envInt = (k, d) => Number.parseInt(env(k, String(d)), 10);
+const envFloat = (k, d) => Number.parseFloat(env(k, String(d)));
+const envBool = (k, d) => ["1", "true", "yes", "on"].includes(String(env(k, d)).toLowerCase());
+
+export const config = {
+  // ---- http ------------------------------------------------------------
+  port: envInt("PORT", 8000),
+  host: env("HOST", "127.0.0.1"),
+  // Serves dashboard/ from the same origin -- the frozen UI's contract.
+  // resolved relative to this file: src/ -> repo root -> dashboard/
+  dashboardDir: env("DASHBOARD_DIR", new URL("../dashboard", import.meta.url).pathname),
+
+  // ---- upstream model --------------------------------------------------
+  upstreamUrl: env("UPSTREAM_URL", "http://127.0.0.1:8080"),
+  upstreamKey: env("UPSTREAM_KEY", "local-dev-key"),
+  model: env("MODEL_ID", "qwen2.5-7b-instruct"),
+  modelTimeoutMs: envInt("MODEL_TIMEOUT_MS", 300_000),
+
+  // The model supervisor: spawn on a real miss, kill after N idle seconds.
+  // modelIdleS = 0 unloads immediately (max memory saving, every miss pays
+  // the ~3s spawn); -1 never unloads (min latency). Default 120s.
+  modelIdleS: envInt("MODEL_IDLE_S", 120),
+  modelCommand: env("MODEL_CMD", ""), // empty => use defaults below
+  modelCwd: env("MODEL_CWD", ""),
+  llamaServerBin: env("LLAMA_SERVER_BIN", "/tmp/opencode/llamacpp-probe/build/bin/llama-server"),
+  modelGguf: env("MODEL_GGUF", "/home/suman/Desktop/Project/llm-cache/models/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"),
+  modelAdapter: env("MODEL_ADAPTER", "/home/suman/Desktop/Project/llm-cache/models/lora/aws-adapter.gguf"),
+  modelCtx: envInt("MODEL_CTX", 512),
+  modelThreads: envInt("MODEL_THREADS", 12),
+
+  // ---- redis (vector index for the semantic tier) ----------------------
+  redisUrl: env("REDIS_URL", "redis://127.0.0.1:6379/0"),
+  redisKeyPrefix: env("REDIS_PREFIX", "vec"),
+  vectorIndex: env("VECTOR_INDEX", "idx_content"),
+  vectorDim: envInt("VECTOR_DIM", 384),
+  // Cosine radius. Deliberately tight: the SOP's safety gate is the verifier,
+  // and a loose radius is what the old build got wrong.
+  distanceThreshold: envFloat("DISTANCE_THRESHOLD", 0.35),
+
+  // ---- sqlite (durable cache, provenance, review state, events) --------
+  dbPath: env("DB_PATH", new URL("../data/llm-cache.sqlite", import.meta.url).pathname),
+
+  // ---- governance ------------------------------------------------------
+  // Only entries at or above this review_status may be served to the tutor
+  // path. The SDK/content endpoints pass their own role.
+  minReviewStatus: env("MIN_REVIEW_STATUS", "approved"),
+  requireApproval: envBool("REQUIRE_APPROVAL", false),
+  adminToken: env("ADMIN_TOKEN", ""),
+
+  // ---- observability ---------------------------------------------------
+  statsEventLimit: envInt("STATS_EVENT_LIMIT", 100),
+  serviceName: env("SERVICE_NAME", "llm-cache"),
+  serviceVersion: env("SERVICE_VERSION", "0.2.0"),
+
+  // ---- embedder (lazy) --------------------------------------------------
+  embedderModel: env("EMBEDDER_MODEL", "Xenova/all-MiniLM-L6-v2"),
+  embedderIdleS: envInt("EMBEDDER_IDLE_S", 300),
+
+  allowSeed: envBool("ALLOW_SEED", false),
+};
+
+REQUIRED.forEach((k) => {
+  if (config[k] === undefined || config[k] === null) {
+    throw new Error(`Missing required config: ${k}`);
+  }
+});
+
+export default config;

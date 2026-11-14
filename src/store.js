@@ -1,0 +1,235 @@
+/**
+ * Durable store: SQLite (node:sqlite -- no native build, no dependency).
+ *
+ * Holds the cache documents, their provenance, their review state, the event
+ * ring and the counters. Redis is used only for the vector index, because
+ * that is the one thing SQLite does not do well at scale.
+ */
+
+import { DatabaseSync } from "node:sqlite";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import config from "./config.js";
+
+let _singleton = null;
+
+/**
+ * Process-wide store singleton. The cache engine and the HTTP surface both use
+ * it so they share one SQLite connection and one set of counters.
+ */
+export function getStore() {
+  if (_singleton) return _singleton;
+  _singleton = new Store(config.dbPath);
+  return _singleton;
+}
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS cache_entries (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  fingerprint       TEXT    NOT NULL UNIQUE,
+  scope             TEXT    NOT NULL,
+  model             TEXT    NOT NULL,
+  semantic_text     TEXT    NOT NULL,
+  prompt            TEXT    NOT NULL,
+  response_json     TEXT    NOT NULL,
+  symbol_fp         TEXT    NOT NULL DEFAULT '',
+  envelope_json     TEXT    NOT NULL DEFAULT '{}',
+  template_id       TEXT,
+  params_json       TEXT,
+  actual_answer     TEXT,
+  generation_method TEXT    NOT NULL DEFAULT 'model',
+  verification_method TEXT,
+  review_status     TEXT    NOT NULL DEFAULT 'draft',
+  source_prompt     TEXT,
+  created_at        INTEGER NOT NULL,
+  last_used_at      INTEGER NOT NULL,
+  hits              INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_cache_scope  ON cache_entries(scope);
+CREATE INDEX IF NOT EXISTS idx_cache_model  ON cache_entries(model, scope);
+
+-- Event ring. AUTOINCREMENT is what makes ids monotonic AND never reused:
+-- SQLite documents that AUTOINCREMENT ids are never recycled, which is exactly
+-- the property the dashboard's reconciler depends on (docs/UI-CONTRACT.md 3).
+CREATE TABLE IF NOT EXISTS events (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts           TEXT    NOT NULL,
+  status       TEXT    NOT NULL,
+  model        TEXT,
+  similarity   REAL,
+  threshold    REAL,
+  latency_ms   REAL    NOT NULL,
+  embed_ms     REAL,
+  redis_ms     REAL,
+  infer_ms     REAL,
+  prompt       TEXT    NOT NULL,
+  response     TEXT,
+  source_prompt TEXT,
+  reason       TEXT,
+  tier         TEXT,
+  verified     INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_events_ts ON events(id DESC);
+
+CREATE TABLE IF NOT EXISTS counters (
+  name  TEXT PRIMARY KEY,
+  value INTEGER NOT NULL DEFAULT 0
+);
+`;
+
+const COUNTER_KEYS = [
+  "requests", "exact_hits", "semantic_hits", "misses", "bypasses", "errors",
+  "rejected_hits", "model_invocations", "tokens_saved", "model_spawns",
+];
+
+export class Store {
+  constructor(dbPath) {
+    if (dbPath !== ":memory:") mkdirSync(dirname(dbPath), { recursive: true });
+    this.db = new DatabaseSync(dbPath);
+    this.db.exec("PRAGMA journal_mode=WAL");
+    this.db.exec("PRAGMA synchronous=NORMAL");
+    this.db.exec("PRAGMA foreign_keys=ON");
+    this.db.exec(SCHEMA);
+    for (const k of COUNTER_KEYS) {
+      this.db.prepare("INSERT OR IGNORE INTO counters(name,value) VALUES (?,0)").run(k);
+    }
+  }
+
+  // --------------------------------------------------------------- entries
+
+  getByFingerprint(fingerprint) {
+    return this.db.prepare("SELECT * FROM cache_entries WHERE fingerprint = ?").get(fingerprint);
+  }
+
+  getById(id) {
+    return this.db.prepare("SELECT * FROM cache_entries WHERE id = ?").get(id);
+  }
+
+  /** Newest first; used by /stats and by the corpus view. */
+  listEntries({ scope, limit = 100, offset = 0, reviewStatus, model } = {}) {
+    const where = [];
+    const args = [];
+    if (scope) { where.push("scope = ?"); args.push(scope); }
+    if (reviewStatus) { where.push("review_status = ?"); args.push(reviewStatus); }
+    if (model) { where.push("model = ?"); args.push(model); }
+    const sql = `SELECT * FROM cache_entries ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+                 ORDER BY id DESC LIMIT ? OFFSET ?`;
+    return this.db.prepare(sql).all(...args, limit, offset);
+  }
+
+  countEntries() {
+    return this.db.prepare("SELECT COUNT(*) n FROM cache_entries").get().n;
+  }
+
+  insertEntry(entry) {
+    const r = this.db.prepare(`
+      INSERT INTO cache_entries
+        (fingerprint, scope, model, semantic_text, prompt, response_json, symbol_fp,
+         envelope_json, template_id, params_json, actual_answer, generation_method,
+         verification_method, review_status, source_prompt, created_at, last_used_at, hits)
+      VALUES (@fingerprint,@scope,@model,@semantic_text,@prompt,@response_json,@symbol_fp,
+              @envelope_json,@template_id,@params_json,@actual_answer,@generation_method,
+              @verification_method,@review_status,@source_prompt,@created_at,@last_used_at,0)
+      ON CONFLICT(fingerprint) DO UPDATE SET
+        response_json   = excluded.response_json,
+        semantic_text   = excluded.semantic_text,
+        symbol_fp       = excluded.symbol_fp,
+        envelope_json   = excluded.envelope_json,
+        review_status   = excluded.review_status,
+        last_used_at    = excluded.last_used_at
+    `).run(entry);
+    return r.lastInsertRowid;
+  }
+
+  touchHit(id) {
+    this.db.prepare("UPDATE cache_entries SET hits = hits + 1, last_used_at = ? WHERE id = ?")
+      .run(Date.now(), id);
+  }
+
+  setReviewStatus(id, status) {
+    return this.db.prepare("UPDATE cache_entries SET review_status = ? WHERE id = ?").run(status, id).changes;
+  }
+
+  deleteEntry(id) {
+    return this.db.prepare("DELETE FROM cache_entries WHERE id = ?").run(id).changes;
+  }
+
+  /** Delete by scope (chapter/asset/concept/difficulty band). */
+  deleteByScope(scope) {
+    return this.db.prepare("DELETE FROM cache_entries WHERE scope = ?").run(scope).changes;
+  }
+
+  /** Delete every entry in a chapter. */
+  deleteByChapter(chapterCode) {
+    // chapter lives in envelope_json; scan is fine at PoC corpus sizes.
+    const rows = this.db.prepare("SELECT id, envelope_json FROM cache_entries").all();
+    let n = 0;
+    for (const r of rows) {
+      try {
+        const env = JSON.parse(r.envelope_json || "{}");
+        if (env.chapter_code === chapterCode) n += this.deleteEntry(r.id);
+      } catch { /* ignore malformed */ }
+    }
+    return n;
+  }
+
+  findNearDuplicates(symbolFp, scope, excludeId, limit = 5) {
+    // Deterministic pre-filter first: identical glyph fingerprint and scope.
+    // This is the SOP's "reject near-duplicates" gate, reusing the same
+    // machinery the semantic tier uses -- but for rejection, not reuse.
+    return this.db.prepare(`
+      SELECT * FROM cache_entries
+      WHERE scope = ? AND symbol_fp = ? AND id != ?
+      ORDER BY hits DESC, id DESC LIMIT ?
+    `).all(scope, symbolFp, excludeId ?? -1, limit);
+  }
+
+  // ---------------------------------------------------------------- events
+
+  recordEvent(evt) {
+    const r = this.db.prepare(`
+      INSERT INTO events
+        (ts,status,model,similarity,threshold,latency_ms,embed_ms,redis_ms,infer_ms,
+         prompt,response,source_prompt,reason,tier,verified)
+      VALUES (@ts,@status,@model,@similarity,@threshold,@latency_ms,@embed_ms,@redis_ms,
+              @infer_ms,@prompt,@response,@source_prompt,@reason,@tier,@verified)
+    `).run(evt);
+    return Number(r.lastInsertRowid);
+  }
+
+  recentEvents(limit) {
+    return this.db.prepare("SELECT * FROM events ORDER BY id DESC LIMIT ?").all(limit);
+  }
+
+  trimEvents(limit) {
+    this.db.prepare(`
+      DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT ?)
+    `).run(limit);
+  }
+
+  // -------------------------------------------------------------- counters
+
+  increment(names, by = 1) {
+    const stmt = this.db.prepare(
+      "INSERT INTO counters(name,value) VALUES (?,?) ON CONFLICT(name) DO UPDATE SET value = value + excluded.value"
+    );
+    for (const n of Array.isArray(names) ? names : [names]) stmt.run(n, by);
+  }
+
+  counters() {
+    const rows = this.db.prepare("SELECT name, value FROM counters").all();
+    const out = {};
+    for (const r of rows) out[r.name] = r.value;
+    return out;
+  }
+
+  /** Clears counters + events; the event id sequence deliberately survives. */
+  resetStats() {
+    this.db.exec("DELETE FROM events");
+    for (const k of COUNTER_KEYS) {
+      this.db.prepare("UPDATE counters SET value = 0 WHERE name = ?").run(k);
+    }
+  }
+
+  close() { this.db.close(); }
+}

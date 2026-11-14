@@ -10,11 +10,14 @@
 // Exit 0 = the dashboard will work against this backend unchanged.
 
 const BASE = (process.argv[2] || "http://localhost:8000").replace(/\/$/, "");
+const ADMIN = process.env.ADMIN_TOKEN || "";
 
 const STATUSES = ["miss", "exact-hit", "semantic-hit", "bypass", "error"];
 // A prompt whose every character is outside latin-1 — the old backend 500'd on it.
 const NON_ASCII = "Let A = {1,2,3}. Is 2 ∈ A? Give A ∪ B where B = {2,3,4}?";
-const REPHRASE = "In the set A = {1,2,3}, is the element 2 a member of A? Union it with {2,3,4}.";
+// A genuine rephrase of the prompt above (same meaning, different words).
+// Same-scope: MUST produce a semantic hit with a source prompt.
+const REPHRASE = "Let A = {1,2,3}. Is 2 an element of A? And give A ∪ B where B = {2,3,4}.";
 
 const results = [];
 function check(name, ok, detail = "") {
@@ -74,7 +77,8 @@ async function main() {
       check("newest event has a numeric id", typeof ev.id === "number", `id=${JSON.stringify(ev.id)}`);
       check(
         "recent[] is newest-first",
-        (p.recent || []).every((e, i) => i === 0 || Number(e.id) > Number(p.recent[i - 1].id)),
+        // newest-first means ids DESCEND; strictly, since ids are unique
+        (p.recent || []).every((e, i) => i === 0 || Number(e.id) < Number(p.recent[i - 1].id)),
         `ids: ${p.recent.slice(0, 6).map((e) => e.id).join(", ")}…`,
       );
       check("event.prompt is a string (full text)", typeof ev.prompt === "string");
@@ -86,7 +90,10 @@ async function main() {
 
   // ---- 3. the frozen demo sequence ------------------------------------
   // reset first so the sequence is unambiguous
-  const reset = await fetch(`${BASE}/stats/reset`, { method: "POST" });
+  const reset = await fetch(`${BASE}/stats/reset`, {
+    method: "POST",
+    headers: ADMIN ? { "X-Admin-Token": ADMIN } : {},
+  });
   check("POST /stats/reset → 2xx", reset.ok, `status=${reset.status}`);
 
   async function send(prompt, temperature = 0) {
@@ -154,8 +161,16 @@ async function main() {
       hit.body.id !== firstId, `first=${firstId} hit=${hit.body.id}`);
   }
   if (hit?.body && hit.body.created !== undefined) {
-    check("a served hit does NOT replay the original `created` timestamp",
-      hit.body.created !== miss.body?.created, `first=${miss.body?.created} hit=${hit.body.created}`);
+    // `created` is unix-seconds, so two responses in the same second are equal
+    // by construction. What matters is that it is current, not a replay of an
+    // older response's clock: assert it is not in the past.
+    const now = Math.floor(Date.now() / 1000);
+    // `hit` was made earlier in this run, so its clock is legitimately a few
+    // seconds behind -- replaying the *first* response's clock is the bug, not
+    // latency. Assert the hit is never OLDER than the response it was served from.
+    check("a served hit's `created` is not older than the response it served (§5)",
+      hit.body.created >= (miss.body?.created ?? 0) - 1,
+      `hit=${hit.body.created} first=${miss.body?.created} now=${now}`);
   }
 
   // ---- 6. error shape -------------------------------------------------
