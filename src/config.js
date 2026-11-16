@@ -35,7 +35,12 @@ export const config = {
   llamaServerBin: env("LLAMA_SERVER_BIN", "/tmp/opencode/llamacpp-probe/build/bin/llama-server"),
   modelGguf: env("MODEL_GGUF", "/home/suman/Desktop/Project/llm-cache/models/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"),
   modelAdapter: env("MODEL_ADAPTER", "/home/suman/Desktop/Project/llm-cache/models/lora/aws-adapter.gguf"),
-  modelCtx: envInt("MODEL_CTX", 512),
+  // The adapter was fine-tuned at max_seq_len=512, but the BASE model handles
+  // 32k positions. The grounding (reference chunks) needs room: three chunks
+  // plus the question and a full answer is ~1600 tokens. 2048 keeps the KV
+  // cache at ~115MB, which is a fair price for answers that are actually
+  // specific.
+  modelCtx: envInt("MODEL_CTX", 2048),
   modelThreads: envInt("MODEL_THREADS", 12),
 
   // ---- redis (vector index for the semantic tier) ----------------------
@@ -49,6 +54,21 @@ export const config = {
 
   // ---- sqlite (durable cache, provenance, review state, events) --------
   dbPath: env("DB_PATH", new URL("../data/llm-cache.sqlite", import.meta.url).pathname),
+
+  // ---- grounding --------------------------------------------------------
+  // Reference chunks retrieved per request and folded into the system prompt.
+  groundingTopK: envInt("GROUNDING_TOP_K", 3),
+  // Floor on the answer length. Without grounding the model returned
+  // 100-token summaries; with it, 3-6 sentences of specifics.
+  // 400 completion tokens is ~50s at 7.5 tok/s -- a long miss, but a miss is
+  // supposed to be long: that is what the cache exists to avoid. 700 was
+  // ~90s and read as a hang.
+  maxAnswerTokens: envInt("MAX_ANSWER_TOKENS", 400),
+  // Start the assistant turn at "Key points:" so the model continues from a
+  // bullet list instead of choosing to write one tight paragraph. Measured:
+  // 236 tokens with the prefill, 65 without, and instructions alone ("write at
+  // least 200 words", "use bullet points") are ignored by this 7B.
+  answerPrefill: envBool("ANSWER_PREFILL", true),
 
   // ---- domain guard ----------------------------------------------------
   // The fine-tune's model card promises it refuses out-of-domain questions.

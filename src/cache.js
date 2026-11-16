@@ -34,6 +34,8 @@ import { embed, isLoaded } from "./embedder.js";
 import * as model from "./model.js";
 import * as templates from "./templates.js";
 import { DomainPolicy, OPEN_POLICY } from "./domain.js";
+import { overlapVerdict } from "./lexicon.js";
+import { retrieve, groundRequest, PREFILL, assembleAnswer } from "./knowledge.js";
 import { DOMAIN } from "./corpus.js";
 import {
   requestFingerprint, scopeOf, semanticText, lastUserText,
@@ -125,11 +127,25 @@ async function verifyCandidate(candidate, ctx) {
     return { ok: false, reason: `scope mismatch (${candidate.scope} != ${ctx.scope})` };
   }
 
-  // 2. glyph fingerprint -- cheap, deterministic, catches the |, ∈ vs ⊂ class
   const candFp = await db().getByFingerprint(candidate.fingerprint);
   const cachedFp = candFp?.symbol_fp ?? "";
   if (cachedFp && ctx.symbolFp && cachedFp !== ctx.symbolFp) {
     return { ok: false, reason: "symbol fingerprint differs (different operators/numbers)" };
+  }
+
+  // 2. lexical grounding -- the candidate must actually be about what was
+  //    asked. A cosine distance is not a correctness criterion: "redis aws"
+  //    sits at d=0.349 from "What is AWS?", inside the radius, and the cached
+  //    answer was about AWS in general rather than about Redis. The query's
+  //    specific content words must appear in the candidate.
+  if (ctx.overlap !== false) {
+    let answer = "";
+    try { answer = answerText(JSON.parse(candFp?.response_json || "{}")) ?? ""; } catch { /* ignore */ }
+    const verdict = overlapVerdict(ctx.queryText, candFp?.prompt ?? "", answer, candidate.dist ?? 0);
+    if (!verdict.ok) {
+      return { ok: false, reason: `not lexically grounded: ${verdict.reason}` };
+    }
+    ctx.lastOverlap = verdict;
   }
 
   // 3. deterministic recomputation -- if the entry is template-generated, its
@@ -220,7 +236,13 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   const fingerprint = requestFingerprint(body);
   const minReviewStatus = role === "author" ? "draft" : (config.minReviewStatus || null);
 
-  const ctx = { scope, symbolFp, minReviewStatus, body, envelope };
+  // The lexical guard compares the QUESTION, not the whole conversation: the
+  // system prompt is boilerplate that appears in every request, so counting
+  // its words ("expert", "assistant") as topical terms only adds noise.
+  const ctx = {
+    scope, symbolFp, minReviewStatus, body, envelope,
+    queryText: prompt || semText,
+  };
   const timings = { embed_ms: null, redis_ms: null, infer_ms: null };
 
   const reject = async (status, reason) => {
@@ -418,10 +440,39 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   }
 
   // ---- miss -------------------------------------------------------------
+  // ---- grounding --------------------------------------------------------
+  // The checkpoint has no RAG of its own (the model card attributes its
+  // grounding to a FAISS layer that is not part of the weights), so the
+  // reference material is retrieved here and folded into the system prompt.
+  // Without it the model answers from memory and produces generic text:
+  // "What are virtual machines?" came back as a definition of virtualization
+  // with no mention of EC2 at all.
+  let groundedBody = body;
+  let groundingUsed = 0;
+  try {
+    const chunks = await retrieve(semText, config.groundingTopK);
+    if (chunks.length) {
+      groundedBody = groundRequest(body, chunks, policy.mode !== "off" ? policy : null);
+      groundingUsed = chunks.length;
+    }
+  } catch (err) {
+    console.warn(`[knowledge] retrieval failed, answering ungrounded: ${err.message}`);
+  }
+
   const t2 = performance.now();
   let payload;
   try {
-    payload = await model.infer(body, { maxTokens });
+    payload = await model.infer(groundedBody, {
+      maxTokens: Math.max(maxTokens ?? 0, config.maxAnswerTokens),
+      prefill: config.answerPrefill ? PREFILL : null,
+    });
+    if (config.answerPrefill) {
+      const text = assembleAnswer(PREFILL, payload?.choices?.[0]?.message?.content);
+      payload = {
+        ...payload,
+        choices: [{ ...payload.choices[0], message: { ...payload.choices[0].message, content: text } }],
+      };
+    }
   } catch (err) {
     const latency = performance.now() - started;
     db().recordEvent({
@@ -480,6 +531,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
     latency_ms: round1(latency), similarity: null, threshold: config.distanceThreshold,
     prompt, response: answerText(payload), tier: "miss",
     embed_ms: timings.embed_ms, redis_ms: timings.redis_ms, infer_ms: timings.infer_ms,
+    reason: groundingUsed ? `grounded on ${groundingUsed} reference chunk(s)` : null,
   });
   db().increment(["requests", "misses", "model_invocations"]);
   if (ctx.outOfDomain) db().increment(["out_of_domain"]);

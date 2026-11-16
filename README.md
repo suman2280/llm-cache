@@ -99,6 +99,86 @@ The domain comes from the **corpus**, so swapping the AWS corpus for the JEE *Se
 swaps the domain with it. `DOMAIN_MODE` is `strict` (refuse), `bypass` (answer, label, never
 cache) or `off`.
 
+### Grounding: the RAG the checkpoint does not contain
+
+The model card credits the fine-tune with *"grounded, accurate responses"* — but
+attributes that to a **FAISS layer over 211 scraped AWS doc chunks, which is not part of the
+checkpoint**. Without it the model answers from parametric memory:
+
+```
+"What are virtual machines?"
+  before -> "Virtual machines (VMs) are computer systems that run on a physical server
+             using virtualization technology..."          (no mention of EC2)
+  after  -> "Virtual machines in AWS are instances of EC2, which are resizable virtual
+             servers. They run on a physical host and are created from an Amazon Machine
+             Image (AMI)..."                              (+ source, + caveats)
+```
+
+So grounding is rebuilt from a knowledge base that ships with the repo
+(`knowledge/aws-knowledge.json` — 38 curated, citable AWS chunks). The same MiniLM embedder
+that serves the semantic cache serves the retrieval, so there is no second model and no second
+toolchain. Retrieved chunks go into the system prompt with their source, and the answer is
+asked for a direct sentence, 3–5 specific bullets and a caveat.
+
+The context window had to grow from 512 to **2048**: three chunks plus a question plus a full
+answer is ~1600 tokens, and the 512-token window rejected the request outright. The KV cache
+cost of 2048 is ~115 MB.
+
+### Getting a *long* answer out of a 7B
+
+Asking does not work. This model ignores length and shape instructions outright:
+
+| instruction | tokens | result |
+|---|---|---|
+| "use bullet points" | 65 | prose, no bullets |
+| "write at least 200 words" | 65 | prose, ignored |
+| "give 3-5 specific facts" | 65 | prose, ignored |
+
+Its prior for a definitional question is a tight paragraph, and it produces one. So the
+assistant turn is **prefilled** instead — started at `Key points:` so the model continues from a
+bullet list and cannot choose to stop after one sentence:
+
+| | tokens | result |
+|---|---|---|
+| prefill `"- "` | 48 | one bullet |
+| prefill `"Key points:"` | 87 | a paragraph |
+| **prefill `"Key points:\n"`** | **236** | **a clean bullet list** |
+
+`llama.cpp` exposes this as `continue_final_message` with `add_generation_prompt: false`
+(setting both is an error). The heading the model repeats is collapsed afterwards.
+
+Measured on the questions from the bug report: **256 tokens** for "What are virtual machines?",
+135 for "What is AWS?", 131 for "redis aws" — each with the specifics a reader can act on.
+
+### The lexical guard: why a distance is not a correctness criterion
+
+Reproduced on the running system:
+
+```
+"What is AWS?"        ->  served the cached answer to "What are virtual machines?"
+"redis aws"           ->  served the cached answer to "What is AWS?"
+```
+
+The second one is at **d = 0.349** — inside the 0.35 radius. Short queries collapse together
+in embedding space because one dominant word ("aws") carries the whole vector. **No distance
+threshold can fix this**: the closest legitimate rephrasing is at d = 0.031 and the worst
+false hit is at 0.349, so the two ranges overlap.
+
+So a semantic hit must additionally be **lexically grounded**: the query's *specific* content
+words must appear in the candidate's prompt or answer. Common English words and
+domain-generic words ("aws", "cloud", "service", "difference") are excluded, because those are
+exactly the words a rewording is allowed to change — while "redis", "lifecycle" and "glacier"
+are not.
+
+```
+redis aws                -> miss    (shares no specific term with "What is AWS?")
+What is AWS?             -> miss    (shares no specific term with "What are virtual machines?")
+How does an IAM role differ from an IAM user?
+                         -> semantic-hit   (shares iam, role, user)
+```
+
+Calibrated on 10 labelled pairs (5 must-hit, 5 must-miss): **10/10**.
+
 ### The verifier is the point
 
 Tier 2 does **not** serve a cached answer because it is nearby. A candidate must survive:

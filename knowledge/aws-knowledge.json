@@ -1,0 +1,268 @@
+[
+  {
+    "id": "aws-overview",
+    "topic": "aws-overview",
+    "title": "What Amazon Web Services is",
+    "source": "AWS Documentation — AWS Overview",
+    "text": "Amazon Web Services (AWS) is a cloud platform provided by Amazon that offers over 200 services from data centres (Availability Zones) all over the world. A customer is a 'tenant' of AWS: it runs in its own logically isolated Virtual Private Cloud (VPC), or in one of the many shared services it consumes. AWS is organised into Regions (for example eu-west-1 in Ireland, ap-south-1 in Mumbai, us-east-1 in Northern Virginia), and each Region contains multiple isolated Availability Zones (AZs). Typical AWS service categories include compute (EC2, Lambda, Fargate), storage (S3, EBS, EFS, FSx, Glacier), databases (RDS, Aurora, DynamoDB, Redshift), networking (VPC, Route 53, CloudFront, Transit Gateway), security and identity (IAM, KMS, Secrets Manager, Shield), and observability (CloudWatch, CloudTrail, X-Ray). The AWS Shared Responsibility Model divides duties: AWS secures the underlying infrastructure, and the customer is responsible for what they run inside it — the guest operating system, data, identity and access control."
+  },
+  {
+    "id": "aws-regions-azs",
+    "topic": "aws-overview",
+    "title": "Regions and Availability Zones",
+    "source": "AWS Documentation — Global Infrastructure",
+    "text": "An AWS Region is a separate geographic area containing multiple isolated Availability Zones (AZs). An Availability Zone is one or more discrete data centres with redundant power, networking and cooling. Resources are deployed to a Region, and for resilience you spread them across two or more AZs inside it. Because AZs are isolated from each other, they are normally connected with low-latency, high-throughput links, so an architecture can fail over between them. Some services are Regional (for example IAM, Route 53, S3) and others are zonal or have zonal endpoints (for example an EC2 instance lives in one AZ; an EBS volume lives in one AZ). Data services that claim 'multi-AZ' replicate synchronously across AZs within a Region. Choosing a Region means weighing latency to your users, data residency requirements, service availability, and price, because AWS prices vary by Region."
+  },
+  {
+    "id": "aws-shared-responsibility",
+    "topic": "aws-overview",
+    "title": "The shared responsibility model",
+    "source": "AWS Documentation — Shared Responsibility Model",
+    "text": "In the AWS Shared Responsibility Model, AWS is responsible for security OF the cloud (the physical infrastructure: buildings, hardware, networking, virtualization, the hypervisor, and the managed services themselves), while the customer is responsible for security IN the cloud (the guest operating system, the data, identity and access management, network configuration, and the code of the applications). For an EC2 instance, AWS patches the hardware and the host; you patch the guest OS. For a managed service such as S3 or RDS, AWS handles the infrastructure and the service software, and you remain responsible for data classification, bucket policies, IAM, encryption choices and backups. The dividing line moves further towards AWS as more of the stack is managed — but identity, configuration and data always stay with the customer."
+  },
+  {
+    "id": "ec2-instances",
+    "topic": "ec2",
+    "title": "EC2 instances (virtual machines)",
+    "source": "AWS Documentation — EC2 User Guide, Instances",
+    "text": "Amazon EC2 provides resizable virtual servers, called instances, in the cloud. An instance runs on a physical host and is created from an Amazon Machine Image (AMI); from the customer's point of view it is a virtual machine with its own virtual CPUs (vCPUs), memory, storage and networking. An instance lives in exactly one Availability Zone, and it is addressed by its private IPv4 address inside its VPC subnet; public IPv4 addresses are optional and are assigned per subnet or per instance. Instances boot from an AMI, which is configured with the operating system, the root and data volumes, and optionally an application and its settings. The same AMI can launch many instances, and instances are disposable — you can start, stop, reboot and terminate them, and stopped instances still incur charges for their attached EBS volumes but not for the instance hours. EC2 is the foundation for most AWS compute, but it also exists alongside serverless options such as Lambda and container services such as ECS."
+  },
+  {
+    "id": "ec2-instance-types",
+    "topic": "ec2",
+    "title": "EC2 instance types and families",
+    "source": "AWS Documentation — EC2 Instance Types",
+    "text": "EC2 instance types are named by family, generation and size, for example m7i.large or c6g.xlarge. The first letter is the family, which indicates the workload the type is optimised for: 'm' is general purpose (balanced compute, memory and networking), 'c' is compute optimised, 'r' is memory optimised, 't' is burstable, 'i' is storage optimised, and 'g' is graphics accelerated. The number is the generation. After that comes the size: nano, micro, small, medium, large, xlarge, 2xlarge and so on, each step doubling the vCPUs and memory. Within a family, processor families differ: Intel Xeon (for example m7i) is generally the broadest choice, AMD EPYC (m7a) is often cheaper per vCPU, and AWS Graviton (m7g, c7g) is an ARM design that is typically the best price-performance option for scale-out services. Choosing a type means balancing vCPU count, memory, instance store, network performance and the fact that a smaller instance is proportionally more expensive per vCPU."
+  },
+  {
+    "id": "ec2-purchase-options",
+    "topic": "ec2",
+    "title": "On-demand, Spot, Reserved Instances and Savings Plans",
+    "source": "AWS Documentation — EC2 Purchasing Options",
+    "text": "AWS sells compute capacity in four main ways. On-Demand instances are billed per second (after a minimum of 60 seconds) with no commitment or upfront payment — the most flexible and the most expensive per hour. Spot Instances let you bid for spare capacity at a large discount, often 60-90% below On-Demand; AWS may reclaim a Spot instance with a two-minute interruption notice, so Spot suits fault-tolerant, stateless or easily restarted work. Reserved Instances are a one-year or three-year commitment to a specific instance family in a specific Region, discounted substantially in exchange for that commitment. Savings Plans are a more flexible alternative: you commit to an hourly spend for a one or three-year term and receive the same discounts across a family of services and instance types rather than one exact type. Capacity Blocks and Convertible Reserved Instances exist for more specialised capacity needs. The choice is a trade of cost predictability against flexibility, and it should be made per workload rather than uniformly."
+  },
+  {
+    "id": "ec2-pricing",
+    "topic": "ec2",
+    "title": "How EC2 is priced",
+    "source": "AWS Documentation — EC2 On-Demand Pricing",
+    "text": "On-Demand EC2 price is the hourly rate for the instance type in the Region, multiplied by the number of hours the instance runs, plus the cost of attached storage, and plus data transfer charges for traffic leaving AWS. Rates differ per Region and per instance type; a micro instance is cheap in absolute terms but expensive per vCPU, so a fleet of large instances is usually cheaper than a fleet of small ones for the same total capacity. Because On-Demand bills per second, an instance that runs for 30 minutes costs half of one that runs for an hour. EBS volumes are billed for the provisioned capacity regardless of whether the instance is running or stopped. The cheapest compute is nearly always the instance that is switched off when it is not needed, or that runs on Spot for interruptible work."
+  },
+  {
+    "id": "ec2-autoscaling",
+    "topic": "ec2",
+    "title": "Auto Scaling groups",
+    "source": "AWS Documentation — EC2 Auto Scaling",
+    "text": "An Auto Scaling group launches and terminates EC2 instances to maintain a target capacity, and can also maintain a fixed fleet size. The group is defined by a launch template (which replaces the older launch configuration) and an instance configuration referencing an AMI. Capacity can be scaled manually, on a schedule, or by predictive scaling, or using CloudWatch metrics such as average CPU utilisation or a request count per target. Target tracking policies adjust capacity to keep a metric at a target value, step policies adjust by explicit increments, and scheduled actions cover known peaks. Auto Scaling works with Elastic Load Balancing to add and remove instances from a target group as the load changes, and with Amazon EC2 Spot Instances it can automatically replace instances that AWS reclaims."
+  },
+  {
+    "id": "s3-buckets-objects",
+    "topic": "s3",
+    "title": "S3 buckets, objects and keys",
+    "source": "AWS Documentation — S3 User Guide, Buckets and Objects",
+    "text": "Amazon S3 is an object storage service. Data is stored as objects inside a bucket, and each object is addressed by a key — the full path within the bucket, such as images/2026/june/photo.jpg. A bucket name is globally unique across all of AWS. Objects can be between 0 bytes and 5 TB, and a single bucket can hold an unlimited number of objects. S3 is designed for 11 nines of durability and, depending on the storage class, three or more nines of availability. Buckets are private by default: only the account owner has access until a bucket policy, an IAM policy, or an ACL grants access. Common operations are PUT (write an object), GET (read it), and DELETE. Objects can be given metadata, tags, and a storage class, and can be versioned so that overwrites are retained rather than replaced."
+  },
+  {
+    "id": "s3-storage-classes",
+    "topic": "s3",
+    "title": "S3 storage classes and what they cost",
+    "source": "AWS Documentation — S3 Storage Classes",
+    "text": "S3 offers several storage classes that differ in price per GB-month, in retrieval latency, and in retrieval charge. Standard is the default for general purpose data, with 11 nines of durability and millisecond access. Standard-IA (Infrequent Access) is cheaper for data accessed less than once a quarter and charges a per-GB retrieval fee. Intelligent-Tiering moves objects between classes automatically for a small monthly monitoring fee, which suits data with unpredictable access. Glacier Deep Archive and Glacier Flexible Retrieval are archival classes with the lowest storage price but retrieval measured in minutes to hours, plus per-GB retrieval charges. One Zone-IA stores in a single AZ, which is cheaper but loses the object if that AZ is lost, so it must be paired with replication. The trap is that the cheapest class is only cheapest overall for data that is genuinely read rarely — a retrieval charge on frequently-read data can exceed the storage saving."
+  },
+  {
+    "id": "s3-versioning",
+    "topic": "s3",
+    "title": "Enabling S3 versioning",
+    "source": "AWS Documentation — S3 Versioning",
+    "text": "Versioning keeps every version of an object when it is overwritten or deleted. It is enabled per bucket, from the bucket's Properties tab by choosing Enable versioning, or with the PutBucketVersioning API with Status=Enabled. Once enabled, versioning cannot be suspended, only enabled on buckets that have never had it — though a bucket owner can delete the MFA-Delete protection on a suspended bucket. With versioning on, a DELETE leaves a delete marker rather than removing the object permanently, and a PUT creates a new version with a new version ID. Each version is billed separately, so storage costs grow as objects are overwritten. Versioning is the foundation for protection against accidental deletion and for rollback, and it is what makes S3 object-lock retention possible."
+  },
+  {
+    "id": "s3-lifecycle",
+    "topic": "s3",
+    "title": "S3 lifecycle rules",
+    "source": "AWS Documentation — S3 Lifecycle Management",
+    "text": "A lifecycle configuration rule on a bucket automatically transitions objects to another storage class, or expires them, as they age. You add a rule in the bucket's Management tab, choose the scope (whole bucket or a prefix), then define actions: a transition to a storage class such as Standard-IA or Glacier after N days, and an expiration after M days, optionally deleting non-current versions too. Rules can also abort incomplete multipart uploads after a number of days, which is a common source of unexpected storage charges. Lifecycle policies cost nothing to configure and reduce cost as data ages, but a transition to Glacier makes the data slower to read, so the retrieval delay must be acceptable for that data."
+  },
+  {
+    "id": "s3-encryption",
+    "topic": "s3",
+    "title": "S3 encryption at rest",
+    "source": "AWS Documentation — Protecting Data Using Server-Side Encryption",
+    "text": "All S3 objects are encrypted at rest by default. SSE-S3 (SSE-S3) uses S3-managed keys, requires no configuration, and gives no additional charge. SSE-KMS uses a customer managed key in AWS Key Management Service, which gives control over the key lifecycle and an audit trail in CloudTrail, and is charged per request. SSE-C uses a customer provided key supplied on every request, which keeps the key entirely outside AWS but means you must manage key material yourself. Encryption applies per object, and the method is recorded with the object. HTTPS in transit is separate from encryption at rest. If you enable bucket keys you reduce the cost of KMS calls on high-throughput workloads."
+  },
+  {
+    "id": "s3-replication",
+    "topic": "s3",
+    "title": "S3 replication and cross-region copies",
+    "source": "AWS Documentation — S3 Replication",
+    "text": "Replication copies objects automatically between buckets, either within a Region (for example from a source bucket to a backup bucket) or across Regions and accounts. Versioned buckets replicate every version, and replication requires versioning on both the source and the destination. Replication is asynchronous, so it is not a synchronous mirror; objects that are deleted after a delete marker is created are not replicated, which avoids deleting replicated data. The destination is read-only from the replication perspective. For disaster recovery, S3 Replication is paired with a bucket policy on the destination so that a failover can promote it, and S3 Cross-Region Replication provides Region-level resilience."
+  },
+  {
+    "id": "iam-users",
+    "topic": "iam",
+    "title": "IAM users",
+    "source": "AWS Documentation — IAM Users",
+    "text": "An IAM user is an identity in AWS with credentials — a long-lived access key pair — that a person or an application uses to make API calls. Users belong to groups, and permissions come from identity policies attached to the user or to its groups. Long-lived access keys are a liability: they do not expire, they can leak, and they are difficult to rotate without interruption, so AWS recommends against creating them for human use. The console warns against console access on a user for the same reason. Where a human identity is needed, use IAM Identity Center (AWS SSO) or federation instead, and where a workload needs access, use an IAM role."
+  },
+  {
+    "id": "iam-roles",
+    "topic": "iam",
+    "title": "IAM roles and temporary credentials",
+    "source": "AWS Documentation — IAM Roles",
+    "text": "An IAM role is an identity with permissions that is assumed by a user, an application or an AWS service. When assumed, it issues temporary credentials that expire, typically between 15 minutes and 12 hours. Because there are no stored long-lived keys, a role is the safer way for any workload to access AWS, and it is the recommended replacement for IAM users in application code. A service such as EC2 assumes a role through an instance profile attached at launch, so the instance can call AWS APIs — for example to read an S3 bucket — without any keys on the instance. A human assumes a role via federation or SSO. The trust policy on the role states which principals may assume it; the permissions policy states what the role may do once assumed."
+  },
+  {
+    "id": "iam-policies",
+    "topic": "iam",
+    "title": "IAM policies, types and evaluation",
+    "source": "AWS Documentation — IAM Policies",
+    "text": "An IAM policy is a JSON document that lists permissions. Identity policies are attached to a role, user or group and grant permissions to that identity. Resource policies are attached to a resource — an S3 bucket, a KMS key, a queue — and grant permissions to the principals that use it. Permissions boundaries cap the maximum permissions an identity can ever have, even if another policy grants more. Resource control policies in SCPs constrain what the accounts in an organization can do. When permissions are evaluated, an explicit Deny always wins; otherwise the policies are combined and the request is allowed if any Allow matches. Using roles with conditions — for example requiring a session tag or a source VPC endpoint — is how least privilege is enforced in practice."
+  },
+  {
+    "id": "iam-mfa",
+    "topic": "iam",
+    "title": "MFA, access keys and credential rotation",
+    "source": "AWS Documentation — IAM Credentials",
+    "text": "Multi-factor authentication (MFA) adds a second factor to a sign-in and is required for many account operations. MFA-Delete on an S3 bucket requires an MFA token in the request header to delete an object version, which protects against accidental or malicious deletion. Access keys are issued in pairs with a secret access key; AWS recommends rotating them regularly and never storing them in code. IAM credential reports and CloudTrail logs record which principal used which key and from where. The strongest pattern is to eliminate static credentials entirely by using roles for workloads and federation for people."
+  },
+  {
+    "id": "vpc-basics",
+    "topic": "vpc",
+    "title": "VPCs, subnets and route tables",
+    "source": "AWS Documentation — Amazon VPC User Guide",
+    "text": "A Virtual Private Cloud (VPC) is a logically isolated virtual network inside a data centre, with its own block of IP address space defined by a CIDR range. A VPC contains subnets, each in exactly one Availability Zone. Subnets are commonly split into public subnets, which route to an Internet Gateway, and private subnets, which do not and reach the internet only through a NAT Gateway. Route tables map a destination CIDR to a target — an internet gateway, a NAT gateway, a VPC peering connection, or a transit gateway. Each subnet also has an associated route table; the main route table covers every subnet that has no explicit one. A VPC also carries network ACLs, security groups, and VPC endpoints. The default VPC comes with preconfigured subnets, gateways and a route table, which is enough to get started but is not a design you would keep."
+  },
+  {
+    "id": "vpc-security-groups",
+    "topic": "vpc",
+    "title": "Security groups",
+    "source": "AWS Documentation — Amazon EC2 Security Groups",
+    "text": "A security group is a virtual firewall that controls the traffic that can reach an EC2 instance or another resource. Rules are defined per resource — a security group can be attached to several instances — and each rule specifies a protocol, a port range, and a source or destination. Security groups are stateful: when you allow a response to an inbound connection, the outbound response is allowed automatically, so you do not need a matching return rule. Only allow rules are supported; to deny traffic you remove the allow. By default a new security group allows no inbound traffic and allows all outbound. Rules are referenced by security group ID as well as by CIDR, so one group can reference another and you can build layered access without duplicating IP ranges."
+  },
+  {
+    "id": "vpc-network-acls",
+    "topic": "vpc",
+    "title": "Network ACLs",
+    "source": "AWS Documentation — Amazon VPC Network ACLs",
+    "text": "A network ACL (NACL) is a stateless firewall that filters traffic for an entire subnet rather than for individual instances. Because it is stateless, traffic in each direction is evaluated independently, so you must explicitly allow the return path as well as the outbound request. A NACL supports both allow and deny rules, and the rules are evaluated in order by rule number, so a lower-numbered deny overrides a later allow — which is how you block a specific address range outright. Every subnet is associated with a NACL; the default one allows all traffic. Security groups are the primary per-instance control and NACLs are the subnet-level backstop."
+  },
+  {
+    "id": "vpc-nat-gateway",
+    "topic": "vpc",
+    "title": "NAT gateways and internet connectivity",
+    "source": "AWS Documentation — NAT Gateway",
+    "text": "A NAT gateway lets resources in a private subnet reach the internet without being reachable themselves. Instances send outbound traffic to the NAT gateway in a public subnet, which translates the addresses and forwards the traffic; responses return to the instance. A NAT gateway is a managed, highly available service priced per hour plus per gigabyte processed, and it is the usual way to give private-subnet instances outbound internet access. For an IPv6-only subnet an egress-only internet gateway is used instead. An internet gateway attaches a VPC to the internet and is required for any public IPv4 address to be reachable."
+  },
+  {
+    "id": "lambda-basics",
+    "topic": "lambda",
+    "title": "AWS Lambda",
+    "source": "AWS Documentation — AWS Lambda Developer Guide",
+    "text": "AWS Lambda runs code in response to events without provisioning or managing servers. You upload a function as a ZIP archive or a container image, configure a memory size and a timeout, and choose a runtime — for example Python, Node.js or Java. Lambda bills per request and per GB-second of execution, with a free tier for a small monthly volume. A function's memory setting also determines its CPU share, so more memory means more CPU. Functions are stateless by design, so state belongs in a service such as S3, DynamoDB or RDS. Concurrency is controlled by reserved concurrency, provisioned concurrency and an account-level limit, and throttling appears as 429 errors."
+  },
+  {
+    "id": "lambda-triggers",
+    "topic": "lambda",
+    "title": "Lambda triggers and scheduled invocation",
+    "source": "AWS Documentation — Lambda Triggers and EventBridge",
+    "text": "A Lambda function is invoked by an event source, either directly (an S3 upload, an API Gateway request, a DynamoDB stream) or through an asynchronous event bus. To run a function on a schedule, create an Amazon EventBridge rule with a schedule expression — a cron expression or a rate expression — targeting the function as the destination, and grant the rule permission to invoke it. EventBridge Scheduler is the newer, more capable alternative: it supports a one-minute minimum interval, larger targets per schedule, and more flexible retry and dead-letter behaviour than the older CloudWatch Events scheduled rules. Either way the function needs an execution role with permission to be invoked, and the schedule is evaluated in UTC by default."
+  },
+  {
+    "id": "lambda-concurrency",
+    "topic": "lambda",
+    "title": "Lambda concurrency and scaling",
+    "source": "AWS Documentation — Lambda Concurrency",
+    "text": "Lambda scales by running concurrent instances of a function, each in its own execution environment. Reserved concurrency sets both a guaranteed floor and a hard ceiling for a function, and is the way to protect a downstream system from being overwhelmed. Provisioned concurrency keeps a number of execution environments pre-initialised so that the first invocation does not pay the cold-start cost, at a continuous cost. The account-level regional concurrency limit applies across all functions, and a burst beyond it is rejected with a 429. Functions that must respond quickly to user requests generally benefit from provisioned concurrency."
+  },
+  {
+    "id": "cloudwatch-metrics",
+    "topic": "cloudwatch",
+    "title": "CloudWatch metrics, logs and alarms",
+    "source": "AWS Documentation — Amazon CloudWatch",
+    "text": "CloudWatch collects and monitors metrics, logs and alarms. Metrics are time-series data points with a name, dimensions and a value; the basic monitoring of every AWS service is free and includes data at one-minute granularity, while custom metrics are chargeable. Dashboards group widgets, and alarms watch a metric and notify when a threshold is crossed. CloudWatch Logs stores log events and supports metric filters that turn log patterns into metrics. Logs are retained by default for a limited period on the free tier and indefinitely on some log classes. For troubleshooting, CloudWatch's X-Ray traces requests through the request path."
+  },
+  {
+    "id": "eventbridge",
+    "topic": "cloudwatch",
+    "title": "Amazon EventBridge",
+    "source": "AWS Documentation — Amazon EventBridge",
+    "text": "Amazon EventBridge is a serverless event bus that routes events to targets. Events come from your own applications, from AWS services, or from scheduled rules. A rule contains an event pattern that filters by source, detail-type and attributes, and zero or more targets such as a Lambda function, an SQS queue, an SNS topic or a Step Functions workflow. EventBridge is the recommended way to build loosely coupled, event-driven systems on AWS, and it is also the mechanism for scheduled invocation. Partner event sources let third-party services publish into the bus, and a schema registry keeps event payloads versioned."
+  },
+  {
+    "id": "rds",
+    "topic": "database",
+    "title": "Amazon RDS",
+    "source": "AWS Documentation — Amazon RDS User Guide",
+    "text": "Amazon RDS is a managed relational database service that runs on the database engines you already know — PostgreSQL, MySQL, MariaDB, Oracle, SQL Server. AWS handles the provisioning, patching, backups and monitoring; you choose the engine version, instance class, storage type and size, and whether the instance is single-AZ, multi-AZ or a read replica. Automated backups and point-in-time recovery are included, and you can copy a snapshot to another Region. Aurora is AWS's own MySQL- and PostgreSQL-compatible engine, with storage that scales automatically across three Availability Zones and faster failover than a standard multi-AZ instance."
+  },
+  {
+    "id": "dynamodb",
+    "topic": "database",
+    "title": "Amazon DynamoDB",
+    "source": "AWS Documentation — Amazon DynamoDB Developer Guide",
+    "text": "Amazon DynamoDB is a fully managed NoSQL key-value and document database that delivers single-digit millisecond performance at any scale. Items are addressed by a primary key, which for most tables is a partition key plus a sort key; a table can have as many as 20,000 on-demand capacity units per second. DynamoDB supports strongly consistent reads and eventually consistent reads that cost less, and its Transactions API can write several items atomically. Data is replicated across three Availability Zones automatically, and point-in-time recovery and on-demand backups are available. A table can be converted to a global table for multi-Region reads, or used as the target of DynamoDB Streams for change-data capture."
+  },
+  {
+    "id": "apigateway",
+    "topic": "networking",
+    "title": "Amazon API Gateway",
+    "source": "AWS Documentation — Amazon API Gateway Developer Guide",
+    "text": "Amazon API Gateway is a fully managed service for creating, publishing, maintaining, monitoring and securing APIs. REST APIs are request/response and resource-oriented; HTTP APIs are lower-latency and event-driven, supporting a simpler, lower-cost model; WebSocket APIs are for full-duplex connections. API Gateway handles authentication, throttling, request validation, API keys and usage plans, and can integrate directly with Lambda, SQS, SNS and HTTP backends. A REST API is billed per call; an HTTP API is cheaper. For a public API, front it with CloudFront and put a WAF web ACL in front of that."
+  },
+  {
+    "id": "cloudfront",
+    "topic": "networking",
+    "title": "Amazon CloudFront",
+    "source": "AWS Documentation — Amazon CloudFront Developer Guide",
+    "text": "Amazon CloudFront is a content delivery network that caches content at edge locations close to users, so it serves static and dynamic content with lower latency and less load on the origin. A distribution has origins, cache behaviours that map request paths to those origins, and cache policies that control what is cached and for how long. CloudFront terminates TLS, can use signed URLs and signed cookies for private content, and integrates with AWS WAF for protection and Shield for DDoS mitigation. It also fronts APIs. You are billed for data transfer out and for requests."
+  },
+  {
+    "id": "sqs-sns",
+    "topic": "messaging",
+    "title": "Amazon SQS and Amazon SNS",
+    "source": "AWS Documentation — Amazon SQS Developer Guide",
+    "text": "Amazon SQS is a managed message queue that decouples components and absorbs bursts: producers enqueue messages and consumers process them at their own pace. Standard queues offer at-least-once delivery, while FIFO queues add exactly-once processing and strict ordering with a message-group and deduplication id. SQS now supports message content deduplication and a high-throughput FIFO mode. Amazon SNS is a pub/sub service for fan-out: a topic delivers to any number of endpoints — SQS queues, Lambda functions, HTTP endpoints — with at-least-once delivery, and it also publishes email, SMS and mobile push notifications. A common pattern is SNS to fan out into SQS for per-consumer buffering."
+  },
+  {
+    "id": "cloudtrail",
+    "topic": "security",
+    "title": "AWS CloudTrail",
+    "source": "AWS Documentation — AWS CloudTrail User Guide",
+    "text": "AWS CloudTrail records API activity for audit, compliance and forensics. A trail captures management events — control-plane calls such as creating an IAM role or launching an instance — and can additionally capture data events for resources like S3 objects and Lambda invocations. Events are delivered to Amazon S3 for long-term storage and to CloudWatch Logs for alerting. Organisational trails record activity across every account in an organization, which is how a multi-account setup keeps one audit trail. CloudTrail Lake is a managed data lake for running SQL over the recorded events."
+  },
+  {
+    "id": "kms",
+    "topic": "security",
+    "title": "AWS Key Management Service",
+    "source": "AWS Documentation — AWS KMS Developer Guide",
+    "text": "AWS Key Management Service creates and controls the encryption keys used to protect data across AWS services. A customer managed key stays under your control: you define its key policy, rotation, and when it is scheduled for deletion. A KMS key can be made multi-Region so that the same key encrypts data in several Regions. KMS integrates with S3, EBS, RDS, DynamoDB, SQS and Lambda, and it is the usual way to encrypt data at rest in a way that is auditable through CloudTrail. Charges are per customer master key and per API call, so bucket keys and caching help on high-throughput workloads."
+  },
+  {
+    "id": "quotas-limits",
+    "topic": "governance",
+    "title": "Service quotas and limits",
+    "source": "AWS Documentation — Service Quotas",
+    "text": "Every AWS service has quotas — limits on how many of each resource you can create, how fast you can call an API, or how large an object can be. Most are set per account or per Region, and most are soft: they can be raised by opening a service-quota case, though some limits are fixed. A default limit can be the reason a create call fails with a limit-exceeded error rather than a permission error. AWS Trusted Advisor and the Service Quotas console both show your current limits and their usage, and CloudWatch alarms on a relevant metric can warn you before you hit one."
+  },
+  {
+    "id": "billing-cost",
+    "topic": "governance",
+    "title": "Cost Explorer and AWS Budgets",
+    "source": "AWS Documentation — AWS Billing and Cost Management",
+    "text": "AWS Billing and Cost Management gives you the data to understand and control spend. Cost Explorer produces cost and usage reports you can break down by service, Region, account, tag or usage type, over time, and lets you forecast future spend. AWS Budgets sets a budget with alerts at a percentage or an absolute amount, and can apply an IAM policy that stops the budgeted service when the limit is reached. Cost allocation tags let you attribute spend to a project or team. Because a single un-tagged resource can dominate a bill, tag-on-create and billing alerts are the two controls worth having in place from the first day."
+  },
+  {
+    "id": "elb",
+    "topic": "networking",
+    "title": "Elastic Load Balancing",
+    "source": "AWS Documentation — Elastic Load Balancing User Guide",
+    "text": "Elastic Load Balancing distributes incoming traffic across multiple targets. An Application Load Balancer operates at layer 7, routes by path, host or header, and supports WebSockets, Lambda targets and per-target weighting. A Network Load Balancer operates at layer 4, handles very high throughput, preserves the client IP, and can terminate TLS for TCP listeners. A Gateway Load Balancer inserts third-party virtual appliances into the traffic path. All of them integrate with Auto Scaling groups and target groups, and with the health checks that decide when a target should receive traffic."
+  },
+  {
+    "id": "observability-troubleshooting",
+    "topic": "governance",
+    "title": "Reading a bill and troubleshooting AWS",
+    "source": "AWS Documentation — AWS Troubleshooting",
+    "text": "AWS troubleshooting starts with identifying which service and which Region are involved, then narrowing by the request id in the response and the entries in CloudTrail. A 4xx is a problem with the request — a policy denied it, a quota was exhausted, or the resource name was taken; a 5xx is a problem on the AWS side. For latency, check CloudWatch's service-level dashboards and the service quotas for the Region. For cost, look for the resources that dominate: idle load balancers, unattached EBS volumes, snapshots that outlive their instances, S3 objects in the wrong storage class, or data transfer out of AWS."
+  }
+]

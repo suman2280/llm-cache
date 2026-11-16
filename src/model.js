@@ -121,12 +121,27 @@ export async function ensureModel() {
   throw new Error(`model did not become healthy.\n${out.slice(-500)}`);
 }
 
-/** Run inference and account for it. */
-export async function infer(body, { maxTokens } = {}) {
+/**
+ * Run inference and account for it.
+ *
+ * `prefill` starts the assistant turn so the model continues from it instead
+ * of choosing where to start -- see src/knowledge.js PREFILL. llama.cpp needs
+ * continue_final_message with add_generation_prompt: false; setting both
+ * flags is an error.
+ */
+export async function infer(body, { maxTokens, prefill } = {}) {
   const base = await ensureModel();
   const t0 = performance.now();
   const payload = { ...body };
   if (maxTokens && payload.max_tokens === undefined) payload.max_tokens = maxTokens;
+  if (prefill) {
+    payload.messages = [
+      ...(Array.isArray(payload.messages) ? payload.messages : []),
+      { role: "assistant", content: prefill },
+    ];
+    payload.continue_final_message = true;
+    payload.add_generation_prompt = false;
+  }
   try {
     const res = await fetch(`${base}/v1/chat/completions`, {
       method: "POST",

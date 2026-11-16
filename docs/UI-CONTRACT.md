@@ -284,7 +284,33 @@ test would silently stop testing anything.
 
 ---
 
-## 9. Conformance checklist
+## 9. Lexical grounding on the semantic tier
+
+**A cosine distance is not a correctness criterion.** Reproduced on the running system:
+
+```
+"What is AWS?"  ->  served the cached answer to "What are virtual machines?"
+"redis aws"     ->  served the cached answer to "What is AWS?"   (d = 0.349)
+```
+
+The second pair is *inside* the 0.35 radius, so no distance threshold can fix it: the closest
+legitimate rephrasing is at d = 0.031 and the worst false hit is at d = 0.349, and the ranges
+overlap. Short queries collapse together in embedding space because one dominant word
+("aws") carries the whole vector.
+
+**MUST** — a semantic hit additionally requires **lexical grounding**: the query's *specific*
+content words must appear in the candidate's prompt or answer. Common English words and
+domain-generic words ("aws", "cloud", "service", "difference") are excluded, because those are
+exactly the words a rewording is allowed to change; "redis", "lifecycle" and "glacier" are not.
+
+Calibrated on 10 labelled pairs (5 must-hit, 5 must-miss): 10/10 correct.
+
+**MUST** — a rejected candidate is **counted and reported**, not silently dropped, and the
+search **continues** to the next candidate rather than failing the request.
+
+---
+
+## 10. Conformance checklist
 
 `scripts/check_api_contract.mjs <base_url>` asserts every MUST above against a live server.
 The rebuild is done — from the UI's point of view — when that script exits 0.
