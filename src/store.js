@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS counters (
 const COUNTER_KEYS = [
   "requests", "exact_hits", "semantic_hits", "misses", "bypasses", "errors",
   "rejected_hits", "model_invocations", "tokens_saved", "model_spawns",
+  "in_domain", "out_of_domain",
 ];
 
 export class Store {

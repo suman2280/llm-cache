@@ -247,7 +247,44 @@ Frozen behaviours the backend MUST honour:
 
 ---
 
-## 8. Conformance checklist
+## 8. The domain guard
+
+The fine-tune's model card promises it *"refuses questions outside the AWS domain by
+design"*, and reports **100% correct refusal**. Measured on this build, that promise does
+**not** hold — the adapter is 2.5 M parameters (0.03 %) trained for 17 minutes on 407 Q&A
+pairs; it learned the AWS *style* but not the refusal:
+
+```
+"What is the boiling point of water in Celsius?" -> "The boiling point of water in Celsius is 100 degrees."
+"Who wrote the play Hamlet?"                     -> "Hamlet was written by William Shakespeare."
+```
+
+**0 of 6** out-of-scope questions refused. So the behaviour the card advertises is enforced
+by the **proxy**, before any tier can serve or store an answer — see `src/domain.js`.
+
+### What the backend MUST do
+
+- **MUST** classify each request against the domain described by the loaded corpus.
+- **MUST** refuse out-of-domain requests with **`422`** and a JSON body whose `detail` is a
+  **string** explaining the restriction (the frozen UI renders `payload.detail` verbatim in
+  its error line — see `app.js:392-398`).
+- **MUST NOT** cache an out-of-domain answer, in any mode. It must never resurface later as
+  a cache hit for something else.
+- **MUST** keep the domain in `GET /stats` → `service.domain` (`name`, `description`, `mode`,
+  `threshold`), so the UI can show it. Additive: the frozen UI ignores fields it does not read.
+- **SHOULD** accept a mode of `off` (no restriction) and `bypass` (answered, labelled
+  `x-cache-policy: out-of-domain`, never cached) alongside the default `strict`.
+
+### Why the guard must be domain-agnostic in the contract checks
+
+The contract checker sends an **in-domain** non-ASCII prompt (a U+2011 non-breaking hyphen in
+`S3‑Glacier`), so the ASCII-safe-header contract in §6 is still exercised end to end in every
+domain mode. A prompt outside the domain would be refused before it reached the cache, and the
+test would silently stop testing anything.
+
+---
+
+## 9. Conformance checklist
 
 `scripts/check_api_contract.mjs <base_url>` asserts every MUST above against a live server.
 The rebuild is done — from the UI's point of view — when that script exits 0.

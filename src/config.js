@@ -50,6 +50,15 @@ export const config = {
   // ---- sqlite (durable cache, provenance, review state, events) --------
   dbPath: env("DB_PATH", new URL("../data/llm-cache.sqlite", import.meta.url).pathname),
 
+  // ---- domain guard ----------------------------------------------------
+  // The fine-tune's model card promises it refuses out-of-domain questions.
+  // Measured, it does not (0 of 6), so the proxy enforces it:
+  //   off     no restriction
+  //   bypass  out-of-domain requests are answered but NEVER cached
+  //   strict  out-of-domain requests are refused with 422
+  // The domain itself comes from the corpus (src/corpus.js DOMAIN).
+  domainMode: env("DOMAIN_MODE", "strict"),
+
   // ---- governance ------------------------------------------------------
   // Only entries at or above this review_status may be served to the tutor
   // path. The SDK/content endpoints pass their own role.

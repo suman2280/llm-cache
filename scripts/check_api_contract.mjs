@@ -14,15 +14,18 @@ const ADMIN = process.env.ADMIN_TOKEN || "";
 
 const STATUSES = ["miss", "exact-hit", "semantic-hit", "bypass", "error"];
 // A prompt whose every character is outside latin-1 — the old backend 500'd on it.
-const NON_ASCII = "Let A = {1,2,3}. Is 2 ∈ A? Give A ∪ B where B = {2,3,4}?";
-// A genuine rephrase of the prompt above (same meaning, different words).
-// Same-scope: MUST produce a semantic hit with a source prompt.
+// A non-ASCII prompt, so the ASCII-safe-header contract (UI-CONTRACT 6) is
+// exercised end to end. The non-ASCII character is U+2011 (non-breaking
+// hyphen) in "S3\u2011Glacier" -- a character real pasted text contains, and
+// one the previous build would have turned into an HTTP 500.
+//
+// The prompt is deliberately IN the configured domain: the domain guard would
+// otherwise refuse it before it reached the cache, and the test would
+// silently stop testing anything.
+const NON_ASCII = "What's the difference between S3 Standard and S3\u2011Glacier storage?";
 // A genuine rephrase of the prompt above: same meaning, different words, and
-// -- importantly -- the SAME set of maths glyphs. The verifier compares the
-// glyph multiset (a generic embedder cannot tell the subset symbol from the
-// union one), so a rephrase that drops the membership symbol is REJECTED by
-// design. That is the old build's 10-of-11 false-positive class, fixed.
-const REPHRASE = "Let A = {1,2,3}. Is 2 ∈ A? And give A ∪ B where B = {2,3,4}.";
+// the SAME set of non-ASCII glyphs (the verifier compares the glyph multiset).
+const REPHRASE = "How do S3 Standard and S3\u2011Glacier differ in storage cost?";
 
 const results = [];
 function check(name, ok, detail = "") {
@@ -201,6 +204,26 @@ async function main() {
     overlap.length === 0 || idsAfter.length === 0,
     `${overlap.length} reused id(s) out of ${idsAfter.length}`,
   );
+
+  // ---- the domain guard -------------------------------------------------
+  // The model card promises the fine-tune refuses out-of-domain questions
+  // ("100% correct refusal"). Measured, it does not -- so the proxy enforces
+  // it. An out-of-domain question must be refused (strict) or served but
+  // labelled and never cached (bypass); either way it must NOT come back as
+  // a cache hit.
+  const mode = stats.body?.service?.domain?.mode ?? "off";
+  const ood = await send("Who wrote the play Hamlet?", 0);
+  if (mode === "strict") {
+    check("out-of-domain question is refused",
+      ood.status === 422 && typeof ood.body?.detail === "string",
+      `status=${ood.status} detail=${JSON.stringify(ood.body?.detail)?.slice(0, 90)}`);
+  } else if (mode === "bypass") {
+    check("out-of-domain question is labelled, not cached",
+      ood.h.get("x-cache-policy") === "out-of-domain",
+      `policy=${ood.h.get("x-cache-policy")}`);
+  } else {
+    console.log(`SKIP  out-of-domain question (domain mode is "${mode}")`);
+  }
 
   // ---- report ----------------------------------------------------------
   const failed = results.filter((r) => !r.ok);

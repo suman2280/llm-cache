@@ -107,3 +107,23 @@ content pipeline **must** enforce verification and review in code and must never
 the model. This is the strongest single argument for the project's verifier and the review gate,
 and it is worth showing a stakeholder directly — run `node scripts/bench_model.mjs 1 60` and read
 the out-of-domain row.
+### The refusal is now enforced by the proxy
+
+The card's promise is treated as a **requirement**, not a fact about the weights. Since the
+adapter does not deliver it, `src/domain.js` enforces it before any tier can serve or store an
+answer:
+
+- the domain comes from the **corpus** (`src/corpus.js` -> `DOMAIN`), so swapping the AWS
+  corpus for the JEE *Sets* chapter swaps the domain with it;
+- the classifier is a **hybrid**, because either signal alone is too weak. Semantic similarity
+  to domain exemplars (max cosine) catches paraphrases that avoid jargon; domain vocabulary
+  catches the rest. Measured on this corpus the semantic signal alone *overlaps*: the lowest
+  in-domain score is 0.117 and the highest out-of-domain score is 0.125;
+- out-of-domain requests are refused with **422** (`strict`, the default), or answered but
+  labelled and **never cached** (`bypass`);
+- out-of-domain answers never enter the cache, so they can never resurface as a "semantic
+  hit" for something else.
+
+The behaviour the card advertises is therefore real, even though the weights do not provide
+it. That is the same shape as the verifier: **the model is not trusted to enforce its own
+promises.**

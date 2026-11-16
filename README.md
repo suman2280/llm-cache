@@ -70,6 +70,35 @@ Read it as three separate claims:
 | **2 · semantic** | embedding of the **whole conversation**, vector search **pre-filtered by scope**, then **verified** | **8–14 ms** | **no** | a rewording of the same question in the same scope |
 | **miss** | — | 6–20 s | **yes** | genuinely new work |
 
+### The domain guard
+
+The model card for this fine-tune promises it *"refuses questions outside the AWS domain by
+design"* and reports **100% correct refusal**. Measured on this build, that promise does not
+hold — the adapter learned the AWS *style* but not the refusal:
+
+```
+"What is the boiling point of water in Celsius?"  ->  "The boiling point of water in Celsius is 100 degrees."
+"Who wrote the play Hamlet?"                      ->  "Hamlet was written by William Shakespeare."
+```
+
+**0 of 6** out-of-scope questions refused. So the proxy enforces the promise instead, before
+any tier can serve or store an answer:
+
+```
+$ curl -s -w " [%{http_code}]" -X POST localhost:8000/v1/chat/completions \
+    -H 'Content-Type: application/json' \
+    -d '{"model":"qwen2.5-7b-instruct","messages":[{"role":"user","content":"Who wrote the play Hamlet?"}]}'
+{"detail":"This assistant only answers questions about Amazon Web Services — …"} [422]
+```
+
+The classifier is a **hybrid** — semantic similarity to domain exemplars catches paraphrases
+that avoid jargon, domain vocabulary catches the rest. Neither works alone: the semantic
+signal alone *overlaps* (lowest in-domain score 0.117, highest out-of-domain score 0.125).
+
+The domain comes from the **corpus**, so swapping the AWS corpus for the JEE *Sets* chapter
+swaps the domain with it. `DOMAIN_MODE` is `strict` (refuse), `bypass` (answer, label, never
+cache) or `off`.
+
 ### The verifier is the point
 
 Tier 2 does **not** serve a cached answer because it is nearby. A candidate must survive:
@@ -167,6 +196,10 @@ The demo's questions come from the **backend** (`GET /demo/prompts`), not from t
 they are always in the same domain as the loaded corpus. Today that is AWS
 (`MATH-01-AWS`); when the JEE *Sets* corpus lands, the demo asks about sets without any
 dashboard change.
+
+**The domain guard** — type something general-purpose into the composer (*"Who wrote the
+play Hamlet?"*) and it comes back **422** with an explanation. The model itself would have
+answered it happily; the proxy is what makes the card's promise real.
 
 **The template tier** — the fastest path, and it never touches the model:
 

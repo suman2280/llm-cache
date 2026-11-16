@@ -37,6 +37,56 @@ const LEARNING_OBJECTS = [
     content: "S3 is object storage for large values addressed by key; DynamoDB is a NoSQL table service addressed by primary key.", source_section: "3.2" },
 ];
 
+/**
+ * The domain this corpus covers.
+ *
+ * The model card promises the fine-tune "refuses questions outside the AWS
+ * domain by design" and reports 100% correct refusal. Measured on this build
+ * that promise does not hold (0 of 6 out-of-scope questions refused), so the
+ * guard is enforced here in the proxy instead -- see src/domain.js.
+ *
+ * The descriptor lives beside the corpus on purpose: swapping the corpus to
+ * the JEE *Sets* chapter swaps the domain with it, and the guard keeps
+ * working for the real content pipeline.
+ */
+export const DOMAIN = {
+  name: "aws",
+  description: "Amazon Web Services — cloud infrastructure, services, pricing and operations",
+  // The semantic signal: what the domain is about.
+  exemplars: [
+    "Amazon S3 is an object storage service that stores data as objects inside buckets, addressed by key.",
+    "Amazon EC2 provides resizable virtual servers, called instances, in the cloud.",
+    "AWS Lambda runs code in response to events without provisioning or managing servers.",
+    "EC2 on-demand cost is billed per instance-hour, and the hourly price depends on the instance type.",
+    "S3 storage classes differ in price per GB-month and in retrieval latency and cost.",
+    "Service quotas are the default limits on how many of each resource you can create in an account or Region.",
+    "S3 is object storage for large values addressed by key; DynamoDB is a NoSQL table service addressed by primary key.",
+    "Questions about Amazon Web Services cloud infrastructure: EC2 virtual machines, S3 buckets and storage classes, Lambda functions, IAM roles and users, VPC networking, security groups, RDS databases, CloudWatch monitoring and DynamoDB tables.",
+    "AWS pricing, service quotas, deployment, storage lifecycle rules, object versioning, instance purchase options, scheduled tasks and serverless architectures on Amazon Web Services.",
+    "Operating Amazon Web Services: configuring buckets and lifecycle policies, attaching IAM roles to instances, choosing subnets and security groups, reading CloudWatch metrics, and managing access with policies.",
+  ],
+  // The lexical signal: domain vocabulary. Reliable when present, and absent
+  // from general questions.
+  terms: [
+    "aws", "amazon web services", "s3", "ec2", "lambda", "iam", "vpc", "rds",
+    "dynamodb", "cloudwatch", "cloudformation", "sagemaker", "route 53", "sns",
+    "sqs", "ecs", "eks", "redshift", "aurora", "kinesis", "glacier", "cloudfront",
+    "api gateway", "elastic load balancing", "cloudtrail", "kms", "sso",
+    "bucket", "instance", "storage class", "lifecycle", "versioning",
+    "security group", "network acl", "subnet", "availability zone",
+    "spot instance", "reserved instance", "on-demand", "serverless",
+    "service quota", "shared responsibility", "access key", "iam role",
+    "iam user", "iam policy", "s3://", "arn:", "cloud billing",
+  ],
+  // Definitely-out vocabulary, checked before anything else.
+  outTerms: [
+    "hamlet", "photosynthesis", "world cup", "capital of", "boiling point",
+    "speed of light", "spider", "president of", "sonnet", "permutation",
+    "prime number", "derivative of", "plays askhamlet",
+  ],
+  threshold: 0.3,
+};
+
 const MISCONCEPTIONS = [
   { concept_id: "AWS-04", misconception: "Stopping an EC2 instance stops all charges.",
     correct_understanding: "A stopped instance still pays for its attached EBS volumes; only the instance-hour charge stops.",

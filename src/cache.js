@@ -33,10 +33,56 @@ import * as vectors from "./vectors.js";
 import { embed, isLoaded } from "./embedder.js";
 import * as model from "./model.js";
 import * as templates from "./templates.js";
+import { DomainPolicy, OPEN_POLICY } from "./domain.js";
+import { DOMAIN } from "./corpus.js";
 import {
   requestFingerprint, scopeOf, semanticText, lastUserText,
   symbolFingerprint, asciiHeaderValue, parseEnvelope, encodeEnvelope, samplingClass,
 } from "./keying.js";
+
+/**
+ * The domain policy, built from the corpus's DOMAIN descriptor.
+ *
+ * Mode is configurable because "refuse everything out of domain" is a product
+ * decision, not a technical one:
+ *   off     no restriction (the old behaviour)
+ *   bypass  out-of-domain requests are served by the model but NEVER cached,
+ *           and are labelled x-cache-policy: out-of-domain
+ *   strict  out-of-domain requests are refused with 422
+ *
+ * Either way, an out-of-domain answer never enters the cache: it must not be
+ * able to resurface later as a "semantic hit" for something else.
+ */
+let _policy = null;
+export async function getPolicy() {
+  if (_policy) return _policy;
+  if (!config.domainMode || config.domainMode === "off") {
+    _policy = OPEN_POLICY;
+    return _policy;
+  }
+  _policy = new DomainPolicy({ ...DOMAIN, mode: config.domainMode });
+  return _policy;
+}
+
+/**
+ * Describe the active policy. Works before the policy has been built (the
+ * first /stats call can precede the first chat request), so the domain name
+ * and mode are always truthful.
+ */
+export function policyInfo() {
+  if (_policy) return _policy.describe();
+  if (!config.domainMode || config.domainMode === "off") {
+    return { name: "open", description: "no domain restriction", mode: "off", threshold: null };
+  }
+  return {
+    name: DOMAIN.name,
+    description: DOMAIN.description,
+    mode: config.domainMode,
+    threshold: DOMAIN.threshold,
+    exemplars: DOMAIN.exemplars.length,
+    terms: DOMAIN.terms.length,
+  };
+}
 
 const REVIEW_ORDER = ["draft", "needs_academic_review", "reviewed", "approved", "production"];
 const reviewRank = (s) => {
@@ -209,6 +255,40 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
     throw err;
   }
 
+  // ---- domain guard ----------------------------------------------------
+  // The fine-tune's model card promises it refuses out-of-domain questions
+  // ("100% correct refusal"). Measured, it does not: 0 of 6 out-of-scope
+  // questions were refused. So the promise is enforced here, before any tier
+  // can serve or store an answer.
+  const policy = await getPolicy();
+  let domain = null;
+  if (policy.mode !== "off") {
+    domain = await policy.classify(semText);
+    if (!domain.inDomain) {
+      if (policy.mode === "strict") {
+        const latency = performance.now() - started;
+        db().recordEvent({
+          ts: new Date().toISOString(), status: "bypass", model: body.model,
+          latency_ms: round1(latency), prompt,
+          reason: `out of domain '${policy.name}': ${domain.reason}`,
+          tier: "domain",
+        });
+        db().increment(["requests", "bypasses", "out_of_domain"]);
+        const err = new Error(
+          `This assistant only answers questions about ${policy.description}. ` +
+          `Your question was not recognised as being in that domain (${domain.reason}).`
+        );
+        err.statusCode = 422;
+        err.public = true;
+        throw err;
+      }
+      // mode === "bypass": fall through to inference, but never cache it.
+      ctx.outOfDomain = domain;
+    } else {
+      db().increment(["in_domain"]);
+    }
+  }
+
   // ---- tier 0: deterministic -------------------------------------------
   const det = deterministicTier(envelope);
   if (det?.error) {
@@ -357,7 +437,9 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   }
   timings.infer_ms = round1(performance.now() - t2);
 
-  // Store for tiers 1 and 2.
+  // Store for tiers 1 and 2. An out-of-domain answer is NEVER stored: it must
+  // not be able to resurface later as a "semantic hit" for something else.
+  if (!ctx.outOfDomain) {
   try {
     const reviewStatus = role === "author" ? "draft" : "needs_academic_review";
     const entryId = db().insertEntry({
@@ -390,6 +472,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   } catch (err) {
     console.warn(`[store] cache write failed, request still served: ${err.message}`);
   }
+  }
 
   const latency = performance.now() - started;
   db().recordEvent({
@@ -399,6 +482,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
     embed_ms: timings.embed_ms, redis_ms: timings.redis_ms, infer_ms: timings.infer_ms,
   });
   db().increment(["requests", "misses", "model_invocations"]);
+  if (ctx.outOfDomain) db().increment(["out_of_domain"]);
 
   return {
     status: "miss", tier: "miss",
@@ -408,7 +492,9 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
       "x-cache-latency-ms": round1(latency).toFixed(1),
       "x-embed-ms": timings.embed_ms != null ? String(timings.embed_ms) : "",
       "x-redis-ms": timings.redis_ms != null ? String(timings.redis_ms) : "",
-      "x-cache-policy": ctx.cacheDegraded ? "cache-degraded" : "miss",
+      "x-cache-policy": ctx.outOfDomain
+        ? "out-of-domain"
+        : (ctx.cacheDegraded ? "cache-degraded" : "miss"),
     },
     event: { prompt, response: answerText(payload), embed_ms: timings.embed_ms, redis_ms: timings.redis_ms },
   };
@@ -452,6 +538,7 @@ export function statsPayload() {
       ttl_s: null,
       // additive: the frozen UI ignores fields it does not read
       model_state: model.modelStats(),
+      domain: policyInfo(),
       cache_entries: db().countEntries(),
       embedder_loaded: isLoaded(),
       vector_count: undefined,
@@ -464,6 +551,8 @@ export function statsPayload() {
       bypasses: counters.bypasses || 0,
       errors: counters.errors || 0,
       rejected_hits: counters.rejected_hits || 0,
+      in_domain: counters.in_domain || 0,
+      out_of_domain: counters.out_of_domain || 0,
       model_invocations: counters.model_invocations || 0,
       cache_hit_rate: requests ? Number((hits / requests).toFixed(4)) : null,
     },

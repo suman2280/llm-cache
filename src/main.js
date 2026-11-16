@@ -16,6 +16,11 @@ const { build } = await import("./server.js");
 async function main() {
   // Warm the parts we can warm cheaply; the model and the embedder stay lazy.
   const app = await build();
+  // Build the domain policy up front: it embeds the exemplars, and doing that
+  // on the first request would make it slower than the request it guards.
+  const { getPolicy } = await import("./cache.js");
+  const policy = await getPolicy();
+  console.log(`[app] domain: ${policy.name} (${policy.mode}) - ${policy.description}`);
   const { ensureIndex, isUp } = await import("./vectors.js");
   try { await ensureIndex(); } catch (e) { console.warn(`[redis] unavailable: ${e.message}`); }
 
