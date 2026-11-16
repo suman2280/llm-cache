@@ -51,9 +51,27 @@ async function vectors() {
 
 /**
  * Retrieve the most relevant chunks for a query.
+ *
+ * `margin` is a RELATIVE cutoff: only chunks within `margin` of the best
+ * score are kept. Without it, a broad question pulls in several unrelated
+ * chunks and the model writes a grab-bag -- "aws" retrieved the overview, RDS
+ * *and* the troubleshooting chunk, and the answer came back about RDS and
+ * billing rather than about AWS.
+ *
+ * Measured spreads (distance below the top chunk):
+ *
+ *   "aws"                                    0.078  0.118   -> one chunk
+ *   "What is AWS?"                           0.076  0.134   -> one chunk
+ *   "How do I enable versioning on S3?"      0.124  0.161   -> one chunk
+ *   "How do security groups differ from NACLs?" 0.117        -> one chunk
+ *   "What is the shared responsibility model?"  0.278        -> one chunk
+ *   "redis aws"                             0.017  0.093   -> two chunks (a tie)
+ *
+ * A margin of 0.05 separates the two groups cleanly.
+ *
  * @returns {Promise<Array<{id,topic,title,source,text,score}>>}
  */
-export async function retrieve(query, topK = 3) {
+export async function retrieve(query, topK = 3, { margin = 0.05 } = {}) {
   const kb = knowledgeBase();
   if (!kb.length) return [];
   const vecs = await vectors();
@@ -65,7 +83,9 @@ export async function retrieve(query, topK = 3) {
     scored.push({ ...kb[i], score: Number(dot.toFixed(4)) });
   }
   scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, topK);
+  const top = scored[0]?.score ?? 0;
+  const kept = scored.filter((c) => top - c.score <= margin);
+  return kept.slice(0, topK);
 }
 
 /**

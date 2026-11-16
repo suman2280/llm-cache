@@ -474,7 +474,11 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   let groundedBody = body;
   let groundingUsed = 0;
   try {
-    const chunks = await retrieve(semText, config.groundingTopK);
+    // Retrieve with the QUESTION, not the rendered conversation. The rendered
+    // form carries a "USER:\n" prefix, and that prefix is enough to reorder
+    // the results: for "aws" it put "IAM users" and "IAM roles" above the
+    // overview chunk, so the answer came back about IAM instead of about AWS.
+    const chunks = await retrieve(prompt || semText, config.groundingTopK);
     if (chunks.length) {
       groundedBody = groundRequest(body, chunks, policy.mode !== "off" ? policy : null);
       groundingUsed = chunks.length;

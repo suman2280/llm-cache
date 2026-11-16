@@ -150,6 +150,36 @@ bullet list and cannot choose to stop after one sentence:
 Measured on the questions from the bug report: **256 tokens** for "What are virtual machines?",
 135 for "What is AWS?", 131 for "redis aws" — each with the specifics a reader can act on.
 
+### Retrieval: one canonical chunk, not a grab-bag
+
+A broad question used to pull in several unrelated chunks, and the model dutifully
+summarised all of them:
+
+```
+"aws"  ->  retrieved: What Amazon Web Services is / Amazon RDS / Reading a bill
+           answered: RDS engines, CloudTrail troubleshooting, cost optimisation
+```
+
+So retrieval now uses a **relative score margin** — only chunks within `0.05` of the best
+score are kept. Measured spreads (distance below the top chunk):
+
+| query | 2nd chunk | chunks kept |
+|---|---|---|
+| "aws" | 0.078 | **1** — the overview |
+| "What is AWS?" | 0.076 | **1** |
+| "How do I enable versioning on S3?" | 0.124 | **1** |
+| "How do security groups differ from NACLs?" | 0.117 | **1** |
+| "What is the shared responsibility model?" | 0.278 | **1** |
+| "redis aws" | 0.017 | **2** — a genuine tie, both needed |
+
+The margin is the *relative* one that matters: a question with a near-tie ("redis aws")
+keeps both chunks, while a canonical question keeps exactly one.
+
+Retrieval also runs against **the user's question**, not the rendered conversation. The
+rendered form carries a `USER:\n` prefix, and that prefix is enough to reorder the
+results — for `"aws"` it put *IAM users* and *IAM roles* above the overview chunk, so the
+answer came back about IAM instead of about AWS.
+
 ### Degenerate output: the loop that poisons the cache
 
 A 7B on a CPU sometimes falls into a repetition loop. Observed here:

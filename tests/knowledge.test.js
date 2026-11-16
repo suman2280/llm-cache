@@ -66,10 +66,34 @@ test("retrieval finds the right chunk for a question", async () => {
 
 test("retrieval returns the chunks in descending relevance", async () => {
   const chunks = await retrieve("How do I configure an S3 lifecycle rule to archive old objects to Glacier?", 4);
-  assert.ok(chunks.length === 4);
+  assert.ok(chunks.length >= 1);
   for (let i = 1; i < chunks.length; i++) {
     assert.ok(chunks[i - 1].score >= chunks[i].score, "chunks must be ordered by score");
   }
+});
+
+test("a canonical question retrieves ONE chunk, not a grab-bag", async () => {
+  // Without the relative margin, "aws" pulled in the overview, RDS *and* the
+  // troubleshooting chunk, and the answer came back about RDS and billing
+  // rather than about AWS.
+  const chunks = await retrieve("aws", 3);
+  assert.equal(chunks.length, 1, `expected one canonical chunk, got [${chunks.map((c) => c.id).join(", ")}]`);
+  assert.equal(chunks[0].id, "aws-overview");
+});
+
+test("a genuine tie retrieves more than one chunk", async () => {
+  // "redis aws" is a near-tie between the overview and the encryption chunk,
+  // and both are needed for a correct answer.
+  const chunks = await retrieve("redis aws", 3);
+  assert.ok(chunks.length >= 2, `expected at least two chunks, got [${chunks.map((c) => c.id).join(", ")}]`);
+  assert.equal(chunks[0].id, "aws-overview");
+});
+
+test("the margin is configurable", async () => {
+  const tight = await retrieve("How do security groups differ from network ACLs?", 4, { margin: 0.001 });
+  assert.equal(tight.length, 1, "a zero margin keeps only the best chunk");
+  const loose = await retrieve("How do security groups differ from network ACLs?", 4, { margin: 0.5 });
+  assert.ok(loose.length > 1, "a wide margin keeps more");
 });
 
 test("the context is rendered with its source", async () => {
