@@ -440,6 +440,11 @@ dashboard change.
 play Hamlet?"*) and it comes back **422** with an explanation. The model itself would have
 answered it happily; the proxy is what makes the card's promise real.
 
+**Clear the cache.** The dashboard's log header has a **Clear cache** button next to *Reset
+counters*. It asks first, then deletes every cached answer, the vector index, the counters and
+the event feed — so the next request for each question runs the model again (20–60 s each on
+this box). *Reset counters* only zeroes the numbers and the log; the cached answers stay.
+
 **The template tier** — the fastest path, and it never touches the model:
 
 ```bash

@@ -21,6 +21,7 @@ Run the checker: `node scripts/check_api_contract.mjs http://localhost:8000`
 | `GET` | `/stats` | The dashboard's entire world. One poll per second by default. | `app.js:126` |
 | `POST` | `/stats/reset` | Zero counters + clear the event feed. Response must be `2xx`. **Not admin-gated** — see below. | `app.js:547` |
 | `GET` | `/demo/prompts` | The questions the *Run the demo* button asks. Optional but recommended — see §7. | `app.js:501` |
+| `POST` | `/cache/clear` | Delete every cached answer, the vector index, the counters and the event feed. Backs the dashboard's **Clear cache** button. | `app.js:588` |
 | `GET` | `/healthz` | Linked from the footer; also used by the old benchmark's server probe. | `index.html:126` |
 | `GET` | `/` | API root. Must return an object (the UI never reads it; keep it for humans). | `index.html:124` |
 
@@ -29,6 +30,19 @@ Run the checker: `node scripts/check_api_contract.mjs http://localhost:8000`
 for the modules). The UI makes **zero external requests**; a rebuild must not introduce any.
 
 **MUST** make all API paths same-origin as the dashboard (no CORS surface).
+
+### Authentication on the mutating routes
+
+`/cache/clear`, `/cache/purge`, `/cache/scope/:scope`, `/cache/chapter/:code`,
+`/content/records/:id/review` and `/stats/record-event` require **either** the
+`X-Admin-Token` header **or** a **same-origin browser request**
+(`Sec-Fetch-Site: same-origin`, or an `Origin`/`Referer` on the same host).
+
+The second clause is what lets the dashboard's own buttons work without embedding the admin
+token in the page: a same-origin fetch is inside the page's own trust boundary, while a
+cross-origin or script-driven request is not. It is defence in depth, not a hard boundary —
+anything that can reach the port can forge the header — so `ADMIN_TOKEN` should still be set for
+anything but a localhost PoC.
 
 ### The one deliberate exception: `/stats/reset` is not admin-gated
 

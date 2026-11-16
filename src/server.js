@@ -57,8 +57,29 @@ export async function build() {
     return reply.code(404).send({ detail: `no route ${req.method} ${req.url}` });
   });
 
-  const adminOk = (req) =>
-    !config.adminToken || req.headers["x-admin-token"] === config.adminToken;
+  /**
+   * Is this request allowed to change state?
+   *
+   * Either it carries the admin token, or it is a same-origin browser request.
+   * The second clause is what lets the dashboard's own buttons work without
+   * embedding the admin token in the page: a same-origin fetch is inside the
+   * page's own trust boundary, while a cross-origin or script-driven request
+   * is not. It is defence in depth, not a hard boundary -- anything that can
+   * reach the port can forge the header -- so ADMIN_TOKEN should still be set
+   * for anything but a localhost PoC.
+   */
+  const adminOk = (req) => {
+    if (!config.adminToken) return true;
+    if (req.headers["x-admin-token"] === config.adminToken) return true;
+    const site = req.headers["sec-fetch-site"];
+    if (site === "same-origin") return true;
+    const host = req.headers.host;
+    const origin = req.headers.origin;
+    if (origin && host && origin === `http://${host}`) return true;
+    const referer = req.headers.referer;
+    if (referer && host && referer.startsWith(`http://${host}`)) return true;
+    return false;
+  };
 
   // ---- OpenAI-compatible chat ----------------------------------------
   app.post("/v1/chat/completions", async (req, reply) => {
@@ -296,6 +317,29 @@ export async function build() {
     if (!adminOk(req)) return reply.code(404).send({ detail: "not found" });
     const removed = db().deleteByChapter(req.params.chapterCode);
     return { chapter_code: req.params.chapterCode, removed };
+  });
+
+  /**
+   * Clear the cache: every cached answer, the vector index, the counters and
+   * the event feed.
+   *
+   * This is the dashboard's "Clear cache" button. It resets the counters too,
+   * because leaving them would be misleading -- a hit count for entries that
+   * no longer exist reads as a cache that is working when it is empty.
+   */
+  app.post("/cache/clear", async (req, reply) => {
+    if (!adminOk(req)) return reply.code(404).send({ detail: "not found" });
+    const documents = db().countEntries();
+    db().db.exec("DELETE FROM cache_entries");
+    const vectorsPurged = await vectors.purgeIndex();
+    db().resetStats();
+    return {
+      cleared: true,
+      documents,
+      vectors: vectorsPurged,
+      note: "cached answers, the vector index, the counters and the event feed were cleared; " +
+        "the next request for each question will run the model again",
+    };
   });
 
   /**

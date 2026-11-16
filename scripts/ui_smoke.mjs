@@ -18,6 +18,9 @@ import { homedir } from "node:os";
 import puppeteer from "puppeteer-core";
 
 const URL = process.argv[2] || "http://localhost:8000/dashboard/";
+// the API base is the same origin without the dashboard path
+// (note: the global URL constructor is shadowed by the constant above)
+const API = URL.replace(/\/dashboard\/?$/, "").replace(/\/$/, "");
 
 /** Locate a Chrome: explicit env, a system install, or the puppeteer cache. */
 function findChrome() {
@@ -192,6 +195,30 @@ try {
   );
   const rowsLeft = await page.$$eval("#log .row", (r) => r.length);
   check("confirm dialog zeroes counters + log", rowsLeft === 0, `rows=${rowsLeft}`);
+
+  // 9. the "Clear cache" button: a destructive action, so it must ask first
+  const entriesBefore = await (await fetch(`${API}/stats`)).json();
+  await page.$eval("#clear-cache-btn", (b) => b.click());
+  await page.waitForSelector("#confirm-dialog[open]", { timeout: 5000 });
+  const dialogTitle = await page.$eval("#confirm-title", (el) => el.textContent);
+  await page.keyboard.press("Escape");
+  await new Promise((r) => setTimeout(r, 300));
+  const stillThere = await (await fetch(`${API}/stats`)).json();
+  check("clear-cache asks before deleting anything",
+    /clear/i.test(dialogTitle) && stillThere.service.cache_entries === entriesBefore.service.cache_entries,
+    `title=${JSON.stringify(dialogTitle)}`);
+
+  await page.$eval("#clear-cache-btn", (b) => b.click());
+  await page.waitForSelector("#confirm-dialog[open]", { timeout: 5000 });
+  await page.click("#confirm-ok");
+  await page.waitForFunction(
+    () => Number(document.getElementById("kpi-requests").dataset.value) === 0,
+    { timeout: 10_000 },
+  );
+  const cleared = await (await fetch(`${API}/stats`)).json();
+  check("clear-cache empties the cache and the counters",
+    cleared.service.cache_entries === 0 && cleared.totals.requests === 0,
+    `entries=${cleared.service.cache_entries} requests=${cleared.totals.requests}`);
 
   check("zero external requests (offline claim)", external.length === 0, external.slice(0, 2).join(", "));
 } finally {

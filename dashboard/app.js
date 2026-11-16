@@ -581,6 +581,38 @@ async function resetCounters() {
     .finally(tick);
 }
 
+// ---------------------------------------------------------------- clear cache
+// Deletes every cached answer, the vector index, the counters and the event
+// feed. The counters go with it on purpose: a hit count for entries that no
+// longer exist reads as a cache that is working when it is empty.
+async function clearCache() {
+  const ok = await confirmAction(
+    "Clear the cache?",
+    "Delete every cached answer and reset the counters and the log. The next request " +
+      "for each question runs the model again \u2014 on this box that is a 20\u201360 second " +
+      "inference per question.",
+    "Clear cache",
+  );
+  if (!ok) return;
+  rows.forEach((row) => row.remove());
+  rows.clear();
+  lastLogSignature = "";
+  try {
+    const res = await fetch("/cache/clear", { method: "POST" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = await res.json().catch(() => ({}));
+    const n = body.documents ?? 0;
+    setStatus(
+      `cache cleared \u2014 ${n} cached answer${n === 1 ? "" : "s"} deleted, counters reset`,
+      false,
+    );
+  } catch (err) {
+    setStatus(`clear failed: ${err.message}`, true);
+  } finally {
+    tick();
+  }
+}
+
 // Composer draft survives reloads (the one piece of client state worth keeping).
 const DRAFT_KEY = "llm-cache:draft";
 promptEl.value = localStorage.getItem(DRAFT_KEY) || "";
@@ -597,6 +629,7 @@ function start() {
     if (!document.hidden) tick();
   }, pollMs());
   $("reset-btn").addEventListener("click", resetCounters);
+  $("clear-cache-btn").addEventListener("click", clearCache);
 }
 
 start();
