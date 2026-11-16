@@ -70,6 +70,26 @@ export const config = {
   // least 200 words", "use bullet points") are ignored by this 7B.
   answerPrefill: envBool("ANSWER_PREFILL", true),
 
+  // ---- anti-repetition sampling ----------------------------------------
+  // A 7B on a CPU will fall into a repetition loop and emit one line over and
+  // over ("s3 HTTPS encryption" produced the same bullet 15 times). These are
+  // the sampler knobs that stop it:
+  //   frequency/presence penalty -- push down tokens that have appeared
+  //   repeat_penalty           -- penalise any repeated token sequence
+  //   DRY ("Don't Repeat Yourself") -- the strongest of the three; it is
+  //   designed for exactly this failure
+  // The caller may override any of them per request.
+  frequencyPenalty: envFloat("FREQUENCY_PENALTY", 0.4),
+  presencePenalty: envFloat("PRESENCE_PENALTY", 0.3),
+  repeatPenalty: envFloat("REPEAT_PENALTY", 1.15),
+  dryMultiplier: envFloat("DRY_MULTIPLIER", 0.8),
+  dryBase: envFloat("DRY_BASE", 1.75),
+  dryAllowedLength: envInt("DRY_ALLOWED_LENGTH", 2),
+  dryPenaltyLastN: envInt("DRY_PENALTY_LAST_N", 64),
+  // A degenerate answer is retried once with a hotter sample and a different
+  // seed. If it still degenerates it is NOT cached and the request fails.
+  degenerateRetries: envInt("DEGENERATE_RETRIES", 1),
+
   // ---- domain guard ----------------------------------------------------
   // The fine-tune's model card promises it refuses out-of-domain questions.
   // Measured, it does not (0 of 6), so the proxy enforces it:

@@ -134,6 +134,21 @@ export async function infer(body, { maxTokens, prefill } = {}) {
   const t0 = performance.now();
   const payload = { ...body };
   if (maxTokens && payload.max_tokens === undefined) payload.max_tokens = maxTokens;
+
+  // Anti-repetition sampling. The caller may set any of these; the defaults
+  // only fill in what the caller left out.
+  const sampler = {
+    frequency_penalty: config.frequencyPenalty,
+    presence_penalty: config.presencePenalty,
+    repeat_penalty: config.repeatPenalty,
+    dry_multiplier: config.dryMultiplier,
+    dry_base: config.dryBase,
+    dry_allowed_length: config.dryAllowedLength,
+    dry_penalty_last_n: config.dryPenaltyLastN,
+  };
+  for (const [k, v] of Object.entries(sampler)) {
+    if (payload[k] === undefined) payload[k] = v;
+  }
   if (prefill) {
     payload.messages = [
       ...(Array.isArray(payload.messages) ? payload.messages : []),

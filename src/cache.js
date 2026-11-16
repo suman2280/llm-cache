@@ -36,6 +36,7 @@ import * as templates from "./templates.js";
 import { DomainPolicy, OPEN_POLICY } from "./domain.js";
 import { overlapVerdict } from "./lexicon.js";
 import { retrieve, groundRequest, PREFILL, assembleAnswer } from "./knowledge.js";
+import { detectDegeneracy } from "./degenerate.js";
 import { DOMAIN } from "./corpus.js";
 import {
   requestFingerprint, scopeOf, semanticText, lastUserText,
@@ -84,6 +85,29 @@ export function policyInfo() {
     exemplars: DOMAIN.exemplars.length,
     terms: DOMAIN.terms.length,
   };
+}
+
+/**
+ * Sweep the cache for answers that are already degenerate.
+ *
+ * New degenerate answers are never cached, but an entry cached before this
+ * guard existed would still be served -- and its neighbours in the semantic
+ * index would inherit the garbage. This runs at startup and evicts them.
+ */
+export async function purgeDegenerateEntries() {
+  const rows = db().listEntries({ limit: 10_000 });
+  let purged = 0;
+  for (const row of rows) {
+    let text = "";
+    try { text = answerText(JSON.parse(row.response_json || "{}")) ?? ""; } catch { /* ignore */ }
+    const verdict = detectDegeneracy(text);
+    if (!verdict.degenerate) continue;
+    db().deleteEntry(row.id);
+    await vectors.deleteDocument(`e${row.id}`).catch(() => {});
+    purged += 1;
+    console.warn(`[cache] evicted a degenerate cached answer (id=${row.id}): ${verdict.reason}`);
+  }
+  return purged;
 }
 
 const REVIEW_ORDER = ["draft", "needs_academic_review", "reviewed", "approved", "production"];
@@ -461,17 +485,50 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
 
   const t2 = performance.now();
   let payload;
+  let degeneracy = null;
   try {
-    payload = await model.infer(groundedBody, {
-      maxTokens: Math.max(maxTokens ?? 0, config.maxAnswerTokens),
-      prefill: config.answerPrefill ? PREFILL : null,
-    });
-    if (config.answerPrefill) {
-      const text = assembleAnswer(PREFILL, payload?.choices?.[0]?.message?.content);
-      payload = {
-        ...payload,
-        choices: [{ ...payload.choices[0], message: { ...payload.choices[0].message, content: text } }],
-      };
+    // A 7B on a CPU sometimes falls into a repetition loop and emits one line
+    // over and over ("s3 HTTPS encryption" produced the same bullet 15
+    // times). Such an answer must never be cached -- it would then be served
+    // to every future request for that question -- so it is detected, retried
+    // with a hotter sample, and discarded if it happens again.
+    for (let attempt = 0; attempt <= config.degenerateRetries; attempt++) {
+      const retry = attempt > 0;
+      const reqBody = retry
+        ? {
+          ...groundedBody,
+          temperature: Math.min(1.2, Number(groundedBody.temperature ?? 0.3) + 0.3),
+          seed: undefined, // a fresh sample
+        }
+        : groundedBody;
+
+      payload = await model.infer(reqBody, {
+        maxTokens: Math.max(maxTokens ?? 0, config.maxAnswerTokens),
+        prefill: config.answerPrefill ? PREFILL : null,
+      });
+      if (config.answerPrefill) {
+        const text = assembleAnswer(PREFILL, payload?.choices?.[0]?.message?.content);
+        payload = {
+          ...payload,
+          choices: [{ ...payload.choices[0], message: { ...payload.choices[0].message, content: text } }],
+        };
+      }
+
+      const answer = answerText(payload) ?? "";
+      const verdict = detectDegeneracy(answer);
+      if (!verdict.degenerate) { degeneracy = null; break; }
+      degeneracy = verdict;
+      console.warn(`[generation] degenerate output (${verdict.reason}) -- attempt ${attempt + 1}`);
+      if (attempt === config.degenerateRetries) {
+        // give up: return an error rather than a broken answer, and cache nothing
+        const err = new Error(
+          `the model produced a degenerate answer (${verdict.reason}) and it could not be ` +
+          "regenerated; nothing was cached"
+        );
+        err.statusCode = 502;
+        err.public = true;
+        throw err;
+      }
     }
   } catch (err) {
     const latency = performance.now() - started;
@@ -481,8 +538,8 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
       embed_ms: timings.embed_ms, redis_ms: timings.redis_ms,
     });
     db().increment(["requests", "errors"]);
-    const e = new Error(`inference failed: ${err.message}`);
-    e.statusCode = 502;
+    const e = new Error(err.public ? err.message : `inference failed: ${err.message}`);
+    e.statusCode = err.statusCode ?? 502;
     e.public = true;
     throw e;
   }
@@ -490,7 +547,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
 
   // Store for tiers 1 and 2. An out-of-domain answer is NEVER stored: it must
   // not be able to resurface later as a "semantic hit" for something else.
-  if (!ctx.outOfDomain) {
+  if (!ctx.outOfDomain && !degeneracy) {
   try {
     const reviewStatus = role === "author" ? "draft" : "needs_academic_review";
     const entryId = db().insertEntry({

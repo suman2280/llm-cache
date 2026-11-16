@@ -18,9 +18,13 @@ async function main() {
   const app = await build();
   // Build the domain policy up front: it embeds the exemplars, and doing that
   // on the first request would make it slower than the request it guards.
-  const { getPolicy } = await import("./cache.js");
+  const { getPolicy, purgeDegenerateEntries } = await import("./cache.js");
   const policy = await getPolicy();
   console.log(`[app] domain: ${policy.name} (${policy.mode}) - ${policy.description}`);
+  // Evict any answer that is already degenerate, so a cached repetition loop
+  // cannot be served (or leak into its neighbours) after a restart.
+  const purged = await purgeDegenerateEntries();
+  if (purged) console.log(`[app] evicted ${purged} degenerate cached answer(s)`);
   const { ensureIndex, isUp } = await import("./vectors.js");
   try { await ensureIndex(); } catch (e) { console.warn(`[redis] unavailable: ${e.message}`); }
 

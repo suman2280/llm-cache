@@ -150,6 +150,34 @@ bullet list and cannot choose to stop after one sentence:
 Measured on the questions from the bug report: **256 tokens** for "What are virtual machines?",
 135 for "What is AWS?", 131 for "redis aws" — each with the specifics a reader can act on.
 
+### Degenerate output: the loop that poisons the cache
+
+A 7B on a CPU sometimes falls into a repetition loop. Observed here:
+
+```
+Q: "s3 HTTPS encription"
+   - HTTPS in transit is separate from encryption at rest for S3 objects.
+   - HTTPS is enabled by default for S3 buckets.
+   ... seven good bullets ...
+   - HTTPS can be used to secure access to S3 objects and buckets from the
+     internet or within a VPC.        <- repeated 15 times, to the token limit
+```
+
+Three things make that much worse than a bad answer: it is **truncated mid-sentence**, and
+**if it is cached it is served to every future request** for that question — and the semantic
+hits around it inherit the garbage.
+
+So:
+
+- the **sampler** is defended — `frequency_penalty`, `presence_penalty`, `repeat_penalty` and
+  DRY (llama.cpp's "Don't Repeat Yourself" sampler, designed for exactly this);
+- the **output** is checked (`src/degenerate.js`): a repeated line, a repeated 8-gram, or an
+  answer that ends mid-sentence is degenerate;
+- a degenerate answer is **retried** once with a hotter sample and a different seed, and if it
+  happens again it is **not cached** and the request fails rather than returning garbage;
+- at **startup** the cache is swept for already-degenerate answers and they are evicted — the
+  running instance had one (`the same line appears 13 times`) and it was removed.
+
 ### The lexical guard: why a distance is not a correctness criterion
 
 Reproduced on the running system:
