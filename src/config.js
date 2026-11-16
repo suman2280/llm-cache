@@ -5,7 +5,17 @@
  * lazy-loaded and unloaded when idle -- see src/model.js and src/embedder.js.
  */
 
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 const REQUIRED = ["port", "redisUrl", "upstreamUrl", "modelIdleS"];
+
+// Everything is resolved from the checkout and the current user's home, so a
+// collaborator can clone the repo and run it without editing a single path.
+// (Earlier defaults were hardcoded to one developer's machine.)
+const REPO = dirname(dirname(fileURLToPath(import.meta.url))); // src/ -> repo root
+const TOOLS = process.env.LLM_TOOLS_DIR || join(homedir(), "llm-cache-tools");
 
 const env = (k, d) => (process.env[k] === undefined || process.env[k] === "" ? d : process.env[k]);
 const envInt = (k, d) => Number.parseInt(env(k, String(d)), 10);
@@ -18,7 +28,7 @@ export const config = {
   host: env("HOST", "127.0.0.1"),
   // Serves dashboard/ from the same origin -- the frozen UI's contract.
   // resolved relative to this file: src/ -> repo root -> dashboard/
-  dashboardDir: env("DASHBOARD_DIR", new URL("../dashboard", import.meta.url).pathname),
+  dashboardDir: env("DASHBOARD_DIR", join(REPO, "dashboard")),
 
   // ---- upstream model --------------------------------------------------
   upstreamUrl: env("UPSTREAM_URL", "http://127.0.0.1:8080"),
@@ -32,9 +42,10 @@ export const config = {
   modelIdleS: envInt("MODEL_IDLE_S", 120),
   modelCommand: env("MODEL_CMD", ""), // empty => use defaults below
   modelCwd: env("MODEL_CWD", ""),
-  llamaServerBin: env("LLAMA_SERVER_BIN", "/tmp/opencode/llamacpp-probe/build/bin/llama-server"),
-  modelGguf: env("MODEL_GGUF", "/home/suman/Desktop/Project/llm-cache/models/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"),
-  modelAdapter: env("MODEL_ADAPTER", "/home/suman/Desktop/Project/llm-cache/models/lora/aws-adapter.gguf"),
+  llamaServerBin: env("LLAMA_SERVER_BIN", join(TOOLS, "llama.cpp", "build", "bin", "llama-server")),
+  modelGguf: env("MODEL_GGUF",
+    join(REPO, "models", "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf")),
+  modelAdapter: env("MODEL_ADAPTER", join(REPO, "models", "lora", "aws-adapter.gguf")),
   // The adapter was fine-tuned at max_seq_len=512, but the BASE model handles
   // 32k positions. The grounding (reference chunks) needs room: three chunks
   // plus the question and a full answer is ~1600 tokens. 2048 keeps the KV
@@ -53,7 +64,7 @@ export const config = {
   distanceThreshold: envFloat("DISTANCE_THRESHOLD", 0.35),
 
   // ---- sqlite (durable cache, provenance, review state, events) --------
-  dbPath: env("DB_PATH", new URL("../data/llm-cache.sqlite", import.meta.url).pathname),
+  dbPath: env("DB_PATH", join(REPO, "data", "llm-cache.sqlite")),
 
   // ---- grounding --------------------------------------------------------
   // Reference chunks retrieved per request and folded into the system prompt.

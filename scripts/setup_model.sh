@@ -85,12 +85,34 @@ else
 fi
 
 log "done"
+
+# Write a working .env so a fresh clone needs no manual path editing. Node's
+# --env-file does NOT expand "~" or variables, so these must be absolute.
+ENV_FILE="$REPO/.env"
+if [ -f "$ENV_FILE" ]; then
+  echo ""
+  echo "A .env already exists; it was left alone. If the paths below differ from"
+  echo "yours, update the three lines:"
+  echo "  LLAMA_SERVER_BIN=$LLAMA_DIR/build/bin/llama-server"
+  echo "  MODEL_GGUF=$MODELS_DIR/$BASE_FILE"
+  echo "  MODEL_ADAPTER=$MODELS_DIR/lora/aws-adapter.gguf"
+else
+  cp "$REPO/.env.example" "$ENV_FILE"
+  {
+    echo ""
+    echo "# --- paths written by scripts/setup_model.sh ---"
+    echo "LLAMA_SERVER_BIN=$LLAMA_DIR/build/bin/llama-server"
+    echo "MODEL_GGUF=$MODELS_DIR/$BASE_FILE"
+    echo "MODEL_ADAPTER=$MODELS_DIR/lora/aws-adapter.gguf"
+  } >> "$ENV_FILE"
+  echo ""
+  echo "Wrote $ENV_FILE with absolute paths for this machine."
+fi
+
 cat <<EOF
 
-Add these to your environment (or a .env you don't commit):
-  LLAMA_SERVER_BIN=$LLAMA_DIR/build/bin/llama-server
-  MODEL_GGUF=$MODELS_DIR/$BASE_FILE
-  MODEL_ADAPTER=$MODELS_DIR/lora/aws-adapter.gguf
-
-Then:  node src/main.js
+Next:
+  bash scripts/dev.sh --wipe      # start Redis + the app
+  node scripts/seed_corpus.mjs    # seed the demo corpus
+  open http://localhost:8000/dashboard/
 EOF

@@ -448,6 +448,10 @@ in ~3 s; the embedder takes 9 ms per 384-d vector.
 
 ## Running it
 
+> **New here?** Follow the [collaborator setup guide](docs/SETUP.md) — prerequisites,
+> a verified step-by-step install, how a request flows, where to make changes, and
+> troubleshooting. The essentials are below.
+
 ```bash
 # prerequisites
 podman run -d --name llm-redis -p 127.0.0.1:6379:6379 \
@@ -519,7 +523,7 @@ The model process appears on a miss and **disappears** 120 s after the last one
 | `npm run seed` | seed the demonstration corpus |
 | `npm run contract` | assert the backend satisfies the frozen UI's contract |
 | `npm run bench:model` | measure the inference layer (throughput, latency, memory, refusal) |
-| `npm test` | 36 tests: the dashboard's reconciliation planner + the backend's keying and templates |
+| `npm test` | 91 tests: the dashboard's reconciliation planner + the backend's keying and templates |
 | `npm run check:dashboard` | every id `app.js` reaches for exists in `index.html` |
 | `node scripts/ui_smoke.mjs` | drive the dashboard in a real Chrome (11 checks) |
 | `node scripts/screenshot.mjs` | capture the dashboard for the docs |
@@ -530,7 +534,7 @@ The dashboard is frozen, so the backend is checked against it mechanically:
 
 ```bash
 node scripts/check_api_contract.mjs http://localhost:8000
-# 38/38 contract checks pass.
+# 44/44 contract checks pass.
 # The frozen dashboard will work against this backend unchanged.
 ```
 
