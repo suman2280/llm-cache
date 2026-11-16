@@ -34,7 +34,7 @@ import { embed, isLoaded } from "./embedder.js";
 import * as model from "./model.js";
 import * as templates from "./templates.js";
 import { DomainPolicy, OPEN_POLICY } from "./domain.js";
-import { overlapVerdict } from "./lexicon.js";
+import { coverageVerdict } from "./lexicon.js";
 import { retrieve, groundRequest, PREFILL, assembleAnswer } from "./knowledge.js";
 import { detectDegeneracy } from "./degenerate.js";
 import { referenceTerms, referenceIdentifiers, checkGrounding } from "./grounding.js";
@@ -158,20 +158,36 @@ async function verifyCandidate(candidate, ctx) {
     return { ok: false, reason: "symbol fingerprint differs (different operators/numbers)" };
   }
 
-  // 2. lexical grounding -- the candidate must actually be about what was
-  //    asked. A cosine distance is not a correctness criterion: "redis aws"
-  //    sits at d=0.349 from "What is AWS?", inside the radius, and the cached
-  //    answer was about AWS in general rather than about Redis. The query's
-  //    specific content words must appear in the candidate.
-  if (ctx.overlap !== false) {
-    let answer = "";
-    try { answer = answerText(JSON.parse(candFp?.response_json || "{}")) ?? ""; } catch { /* ignore */ }
-    const verdict = overlapVerdict(ctx.queryText, candFp?.prompt ?? "", answer, candidate.dist ?? 0);
-    if (!verdict.ok) {
-      return { ok: false, reason: `not lexically grounded: ${verdict.reason}` };
-    }
-    ctx.lastOverlap = verdict;
+  // 2. is the candidate actually the answer to THIS question?
+  //
+  //    A cosine distance is not a correctness criterion. "redis aws" sits at
+  //    d=0.349 from "What is AWS?", inside the radius, and the cached answer
+  //    was about AWS in general rather than about Redis.
+  //
+  //    And a distance is not an EQUIVALENCE criterion either: "What are
+  //    virtual machines?" and "What is EC2?" are the same question, but they
+  //    are 0.792 apart -- far outside any radius -- because they share no
+  //    vocabulary. What they DO share is the knowledge-base chunk they
+  //    ground in ("ec2-instances").
+  //
+  //    So the acceptance rule is: the query and the candidate must ground in
+  //    a shared knowledge-base chunk, AND the candidate must cover the
+  //    query's specific terms.
+  let answer = "";
+  try { answer = answerText(JSON.parse(candFp?.response_json || "{}")) ?? ""; } catch { /* ignore */ }
+  const candChunks = String(candFp?.chunk_ids || "").split(",").filter(Boolean);
+  const chunkOverlap = ctx.chunkIds?.length
+    ? ctx.chunkIds.some((id) => candChunks.includes(id))
+    : false;
+  // A query that grounds in a chunk may only reuse an entry that grounds in
+  // the same chunk. A query that grounds in NO chunk (a topic the knowledge
+  // base does not cover) falls back to coverage alone.
+  const sameMaterial = ctx.chunkIds?.length ? chunkOverlap : true;
+  const verdict = coverageVerdict(ctx.queryText, candFp?.prompt ?? "", answer, sameMaterial);
+  if (!verdict.ok) {
+    return { ok: false, reason: `not the same question: ${verdict.reason}` };
   }
+  ctx.lastOverlap = verdict;
 
   // 3. deterministic recomputation -- if the entry is template-generated, its
   //    answer must still be what the template computes from its own params.
@@ -264,6 +280,15 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   // The lexical guard compares the QUESTION, not the whole conversation: the
   // system prompt is boilerplate that appears in every request, so counting
   // its words ("expert", "assistant") as topical terms only adds noise.
+  // The KB chunks the question grounds in are needed by BOTH the semantic
+  // lookup and the verifier, so they are resolved here rather than only on a
+  // miss. Declared up front: the tier blocks below read them.
+  let groundedBody = body;
+  let groundingUsed = 0;
+  let refTerms = new Set();
+  let refIds = new Set();
+  let chunks = [];
+
   const ctx = {
     scope, symbolFp, minReviewStatus, body, envelope,
     queryText: prompt || semText,
@@ -405,14 +430,39 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   // ---- tier 2: semantic ------------------------------------------------
   if (config.distanceThreshold > 0) {
     try {
+      // The KB chunks the question grounds in are needed by the verifier (a
+      // shared chunk is what makes two questions "the same question"), so
+      // retrieve them before the lookup rather than only on a miss.
+      if (!chunks.length) {
+        chunks = await retrieve(prompt || semText, config.groundingTopK).catch(() => []);
+        if (chunks.length) refTerms = referenceTerms(chunks);
+        if (chunks.length) refIds = referenceIdentifiers(chunks);
+      }
+      ctx.chunkIds = chunks.map((c) => c.id);
+
       let vec = null;
       const t0 = performance.now();
       vec = await embed(semText);
       timings.embed_ms = round1(performance.now() - t0);
       if (vec) {
         const t1 = performance.now();
-        const candidates = await vectors.searchScope(vec, {
-          scope, model: config.model, limit: 3,
+        // Two candidate sets:
+        //  - entries grounded in the SAME knowledge-base chunk (the precise
+        //    equivalence signal; "What are virtual machines?" and "What is
+        //    EC2?" are 0.792 apart but share the chunk "ec2-instances")
+        //  - entries within the cosine radius (the fuzzy signal, which catches
+        //    a question that maps to no chunk)
+        const [byChunk, byRadius] = await Promise.all([
+          vectors.searchByChunks(vec, {
+            chunks: ctx.chunkIds, scope, model: config.model, limit: 5,
+          }),
+          vectors.searchScope(vec, { scope, model: config.model, limit: 3 }),
+        ]);
+        const seen = new Set();
+        const candidates = [...byChunk, ...byRadius].filter((c) => {
+          if (seen.has(c.fingerprint)) return false;
+          seen.add(c.fingerprint);
+          return true;
         });
         timings.redis_ms = round1(performance.now() - t1);
 
@@ -472,11 +522,6 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   // Without it the model answers from memory and produces generic text:
   // "What are virtual machines?" came back as a definition of virtualization
   // with no mention of EC2 at all.
-  let groundedBody = body;
-  let groundingUsed = 0;
-  let refTerms = new Set();
-  let refIds = new Set();
-  let chunks = [];
   try {
     // Retrieve with the QUESTION, not the rendered conversation. The rendered
     // form carries a "USER:\n" prefix, and that prefix is enough to reorder
@@ -547,10 +592,16 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
       if (!degeneracy) degeneracy = verdict;
       console.warn(`[generation] degenerate output (${verdict.reason}) -- attempt ${attempt + 1}`);
       if (attempt === config.degenerateRetries) {
-        // give up: return an error rather than a broken answer, and cache nothing
+        // Give up: return an error rather than a broken answer, and cache
+        // nothing. The two failure modes need different wording -- a
+        // repetition loop and an ungrounded answer are different problems.
         const err = new Error(
-          `the model produced a degenerate answer (${verdict.reason}) and it could not be ` +
-          "regenerated; nothing was cached"
+          verdict.reason?.startsWith("only ")
+            ? `the answer could not be grounded in the reference material ` +
+              `(${verdict.reason}); the knowledge base has no source for this question. ` +
+              `Nothing was cached.`
+            : `the model produced a degenerate answer (${verdict.reason}) and it could ` +
+              `not be regenerated; nothing was cached.`
         );
         err.statusCode = 502;
         err.public = true;
@@ -586,6 +637,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
       response_json: JSON.stringify(payload),
       symbol_fp: symbolFp,
       envelope_json: JSON.stringify(envelope),
+      chunk_ids: chunks.map((c) => c.id).join(","),
       generation_method: ctx.exactRejected ? "model" : "model",
       verification_method: "model",
       review_status: reviewStatus,
@@ -600,7 +652,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
         await vectors.indexDocument(`e${entryId}`, {
           scope, model: config.model, fingerprint,
           generation_method: "model", review_status: reviewStatus,
-          prompt,
+          prompt, chunks: chunks.map((c) => c.id),
         }, vec).catch((e) => console.warn(`[redis] index failed: ${e.message}`));
       }
     }

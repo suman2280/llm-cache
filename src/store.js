@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS cache_entries (
   envelope_json     TEXT    NOT NULL DEFAULT '{}',
   template_id       TEXT,
   params_json       TEXT,
+  chunk_ids         TEXT    NOT NULL DEFAULT '',   -- the KB chunks that grounded it
   actual_answer     TEXT,
   generation_method TEXT    NOT NULL DEFAULT 'model',
   verification_method TEXT,
@@ -126,10 +127,10 @@ export class Store {
     const r = this.db.prepare(`
       INSERT INTO cache_entries
         (fingerprint, scope, model, semantic_text, prompt, response_json, symbol_fp,
-         envelope_json, template_id, params_json, actual_answer, generation_method,
+         envelope_json, template_id, params_json, chunk_ids, actual_answer, generation_method,
          verification_method, review_status, source_prompt, created_at, last_used_at, hits)
       VALUES (@fingerprint,@scope,@model,@semantic_text,@prompt,@response_json,@symbol_fp,
-              @envelope_json,@template_id,@params_json,@actual_answer,@generation_method,
+              @envelope_json,@template_id,@params_json,@chunk_ids,@actual_answer,@generation_method,
               @verification_method,@review_status,@source_prompt,@created_at,@last_used_at,0)
       ON CONFLICT(fingerprint) DO UPDATE SET
         response_json   = excluded.response_json,

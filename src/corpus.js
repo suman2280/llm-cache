@@ -161,6 +161,18 @@ export async function seedDemoCorpus(db, { practiceCount = 24 } = {}) {
   let seeded = 0;
   const now = Date.now();
 
+  // The grounding chunks are part of the cache entry: they are what makes two
+  // questions "the same question" (see src/cache.js). Resolve them per entry.
+  const { retrieve } = await import("./knowledge.js");
+  const chunkIdsFor = async (prompt) => {
+    try {
+      const chunks = await retrieve(prompt, 3);
+      return chunks.map((c) => c.id).join(",");
+    } catch {
+      return "";
+    }
+  };
+
   for (const lo of LEARNING_OBJECTS) {
     const body = {
       model: config.model,
@@ -184,6 +196,7 @@ export async function seedDemoCorpus(db, { practiceCount = 24 } = {}) {
       model: config.model,
       semantic_text: text,
       prompt: question,
+      chunk_ids: await chunkIdsFor(question),
       response_json: JSON.stringify({
         id: `seed-${lo.concept_id}`, object: "chat.completion",
         created: Math.floor(now / 1000), model: config.model,
@@ -210,6 +223,7 @@ export async function seedDemoCorpus(db, { practiceCount = 24 } = {}) {
       model: config.model,
       semantic_text: mc.diagnostic,
       prompt: mc.diagnostic,
+      chunk_ids: await chunkIdsFor(mc.diagnostic),
       response_json: JSON.stringify({
         id: `mis-${mc.concept_id}`, object: "chat.completion",
         created: Math.floor(now / 1000), model: config.model,
@@ -283,6 +297,7 @@ export async function seedDemoCorpus(db, { practiceCount = 24 } = {}) {
         symbol_fp: symbolFingerprint(rendered.prompt),
         envelope_json: JSON.stringify(envelope),
         template_id: tpl.id, params_json: JSON.stringify(params),
+        chunk_ids: await chunkIdsFor(rendered.prompt),
         actual_answer: rendered.answer,
         generation_method: "deterministic_template",
         verification_method: "deterministic_rule",

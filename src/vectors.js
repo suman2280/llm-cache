@@ -62,6 +62,7 @@ export async function ensureIndex() {
     "fingerprint", "TAG",
     "generation_method", "TAG",
     "review_status", "TAG",
+    "chunks", "TAG", // the KB chunks that grounded the entry
     "prompt", "TEXT",
     "embedding", "VECTOR", "FLAT", "6", "TYPE", "FLOAT32", "DIM", String(config.vectorDim),
     "DISTANCE_METRIC", "COSINE",
@@ -108,7 +109,7 @@ const decode = (v) => (typeof v === "string" ? v : Buffer.isBuffer(v) ? v.toStri
 function pairsToObject(flat) { return flat; }
 
 /**
- * Nearest semantically-similar documents INSIDE the scope.
+ * Nearest documents INSIDE the scope, within the radius.
  * Returns up to `limit` docs with their cosine distance.
  */
 export async function searchScope(vec, { scope, model, limit = 3 }) {
@@ -128,9 +129,44 @@ export async function searchScope(vec, { scope, model, limit = 3 }) {
   return docs.map((d) => ({ ...d, dist: Number(d.dist) }));
 }
 
+/**
+ * Documents grounded in the SAME knowledge-base chunk as the query.
+ *
+ * This is the precise equivalence signal. Two questions are the same when
+ * they ground in the same curated chunk -- and the embedding distance is a
+ * poor proxy for it: "What are virtual machines?" and "What is EC2?" are the
+ * same question but sit 0.792 apart, because they share no vocabulary.
+ *
+ * The radius here is deliberately wide (cosine distance over normalised
+ * vectors runs to 2.0): inside one chunk the distance is a RANKING, not a
+ * filter. The verifier decides what is acceptable; this only decides what is
+ * worth looking at.
+ */
+export async function searchByChunks(vec, { chunks, scope, model, limit = 5 }) {
+  const c = await redis();
+  if (!chunks?.length) return [];
+  const filters = [`@chunks:{${chunks.map(escapeTag).join("|")}}`];
+  if (scope) filters.push(`@scope:{${escapeTag(scope)}}`);
+  if (model) filters.push(`@model:{${escapeTag(model)}}`);
+  const query = `${filters.join(" ")} @embedding:[VECTOR_RANGE 1.2 $v]=>{$YIELD_DISTANCE_AS: dist}`;
+  const res = await c.sendCommand([
+    "FT.SEARCH", config.vectorIndex, query,
+    "PARAMS", "2", "v", f32Bytes(vec),
+    "SORTBY", "dist", "ASC",
+    "LIMIT", "0", String(limit),
+    "RETURN", "6", "fingerprint", "prompt", "dist", "scope", "generation_method", "review_status",
+    "DIALECT", "2",
+  ]);
+  const { docs } = parseDocs(res);
+  return docs.map((d) => ({ ...d, dist: Number(d.dist) }));
+}
+
 export async function indexDocument(key, fields, vec) {
   const c = await redis();
   const payload = { ...fields, embedding: f32Bytes(vec) };
+  // the chunk list is a multi-value TAG: RediSearch indexes each value, so
+  // "@chunks:{a|b}" finds a document grounded in either chunk
+  if (Array.isArray(payload.chunks)) payload.chunks = payload.chunks.join(",");
   await c.sendCommand(["HSET", `${config.redisKeyPrefix}:${key}`, ...flattenArgs(payload)]);
 }
 

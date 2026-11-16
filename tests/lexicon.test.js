@@ -15,7 +15,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { specificTerms, contentTerms, overlapVerdict } from "../src/lexicon.js";
+import {
+  specificTerms, contentTerms, overlapVerdict, coverageVerdict, stemmedTerms, stem,
+} from "../src/lexicon.js";
 
 // [query, candidate prompt, candidate answer, must match]
 const MUST_MATCH = [
@@ -110,4 +112,77 @@ test("the verdict explains itself", () => {
   assert.ok(v.reason.length > 10);
   assert.ok(Array.isArray(v.shared));
   assert.ok(Array.isArray(v.missing));
+});
+
+// ---------------------------------------------------------------------------
+// The equivalence rule: a hit must be the answer to THIS question.
+//
+// The knowledge-base chunk is the precise signal. The embedding distance is a
+// poor proxy for "same question": "What are virtual machines?" and "What is
+// EC2?" are the same question but sit 0.792 apart, because they share no
+// vocabulary. What they share is the chunk they ground in.
+
+test("the coverage rule accepts a rewording that shares the source material", () => {
+  const v = coverageVerdict(
+    "How does an IAM role differ from an IAM user?",
+    "What's the difference between an IAM role and an IAM user?",
+    "An IAM user is a long-lived identity with credentials you manage. An IAM role is a temporary set of permissions that a service or user assumes.",
+    true,
+  );
+  assert.ok(v.ok, v.reason);
+});
+
+test("the coverage rule refuses a different question in the same material", () => {
+  // "how do I price an EC2 spot instance" vs an answer about what an EC2
+  // instance IS: the shared words are "ec2" and "instance", but the question
+  // is about price and spot, and the candidate covers neither.
+  const v = coverageVerdict(
+    "How do I price an EC2 spot instance?",
+    "What is an EC2 instance?",
+    "An EC2 instance is a virtual server. It runs on a physical host and is created from an AMI.",
+    true,
+  );
+  assert.ok(!v.ok, v.reason);
+  assert.match(v.reason, /price|spot/);
+});
+
+test("the coverage rule refuses a different source material outright", () => {
+  const v = coverageVerdict(
+    "What is AWS?",
+    "What are virtual machines?",
+    "Virtual machines are computer systems that run on a physical server using virtualization technology.",
+    false,
+  );
+  assert.ok(!v.ok);
+  assert.match(v.reason, /different source material/);
+});
+
+test("the coverage rule refuses a question the candidate does not cover", () => {
+  // "redis aws" against "What is AWS?": same source material, but the
+  // candidate never says "redis" -- which is the whole point.
+  const v = coverageVerdict(
+    "redis aws",
+    "What is AWS?",
+    "Amazon Web Services is a comprehensive cloud platform with more than 200 services.",
+    true,
+  );
+  assert.ok(!v.ok);
+  assert.match(v.reason, /redi/);
+});
+
+test("framing words are not topics", () => {
+  // "differ", "difference", "compare" are how a question is phrased, not
+  // what it is about, so a rewording may drop them without becoming a
+  // different question.
+  const terms = [...stemmedTerms("What is the difference between an IAM role and an IAM user?")];
+  assert.ok(!terms.includes("differ"), "framing verbs are not topical terms");
+  assert.ok(terms.includes("iam"));
+});
+
+test("the stemmer is consistent", () => {
+  // "machines" and "machine" must land on the same stem, or a rewording
+  // looks like a different question.
+  assert.equal(stem("machines"), stem("machine"));
+  assert.equal(stem("instances"), stem("instance"));
+  assert.equal(stem("policies"), stem("policy"));
 });

@@ -263,6 +263,52 @@ So:
 - at **startup** the cache is swept for already-degenerate answers and they are evicted — the
   running instance had one (`the same line appears 13 times`) and it was removed.
 
+### Same question, different words: the chunk is the signal
+
+```
+"What are virtual machines?"   "What is EC2?"                 ->  three different answers, three cache entries
+"EC2"
+```
+
+They are the same question, and the cache could not see it, because **a cosine distance is not an
+equivalence test**. Those two questions are **0.792 apart** — far outside any radius — because
+they share no vocabulary. MiniLM embeds *"What are virtual machines?"* and *"What is EC2?"* as
+nearly unrelated, while both are plainly the same thing.
+
+What they *do* share is the **knowledge-base chunk they ground in** (`ec2-instances`) — a curated,
+human-written unit. That is the precise signal, so it is now the one that decides:
+
+> **A semantic hit requires the query and the candidate to ground in a shared KB chunk, and the
+> candidate to cover the query's specific terms (≥ 0.75).**
+
+Two changes follow from that:
+
+- **Retrieval** searches the vector index by chunk (`@chunks:{ec2-instances|...}`) as well as by
+  radius. Inside one chunk the distance is a *ranking*, not a filter — the old radius query would
+  never have returned the candidate at 0.792.
+- **Acceptance** is coverage-based rather than a shared-term count, and framing words
+  ("differ", "difference", "compare") are not topics — a rewording may drop them and still be the
+  same question.
+
+All four phrasings now return **one** answer (verified: identical content hash):
+
+```
+What are virtual machines?      c2eaf4834d  miss
+What is EC2?                    c2eaf4834d  semantic-hit
+EC2                             c2eaf4834d  semantic-hit
+How do you explain EC2 to me?   c2eaf4834d  semantic-hit
+```
+
+And the false hits still lose:
+
+```
+redis aws                       REJECTED  "covers 0/1 specific terms (missing: redi)"
+How do I price an EC2 spot instance?
+                                 REJECTED  "covers 2/4 specific terms (missing: price, spot)"
+```
+
+Calibrated on 14 labelled pairs: **14/14**.
+
 ### The lexical guard: why a distance is not a correctness criterion
 
 Reproduced on the running system:
