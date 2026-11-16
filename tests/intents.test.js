@@ -67,3 +67,39 @@ test("a generic question against a different topic is still refused", () => {
   );
   assert.ok(!v.ok, v.reason);
 });
+
+// A coordinated topic list joined by "and" is several questions sharing a
+// prefix. Comparisons joined by "and" are ONE question and must not split.
+
+test("a coordinated topic list is several intents", () => {
+  assert.deepEqual(
+    splitIntents("tell me about AWS and EC2"),
+    ["tell me about AWS", "tell me about EC2"],
+  );
+  assert.deepEqual(
+    splitIntents("tell me about AWS, EC2 and S3"),
+    ["tell me about AWS", "tell me about EC2", "tell me about S3"],
+  );
+  assert.deepEqual(
+    splitIntents("explain S3 and DynamoDB"),
+    ["explain S3", "explain DynamoDB"],
+  );
+  assert.ok(isMultiIntent("tell me about AWS and EC2"));
+});
+
+test("comparisons joined by 'and' stay a single intent", () => {
+  // splitting "the difference between X and Y" would produce two
+  // half-questions that cannot be answered on their own
+  for (const q of [
+    "what is the difference between a security group and a network ACL?",
+    "compare EC2 and Lambda",
+    "how do security groups differ from network ACLs?",
+  ]) {
+    assert.equal(splitIntents(q).length, 1, q);
+  }
+});
+
+test("a clause-like 'and' is not split", () => {
+  // no topic prefix -> distributing it would produce broken questions
+  assert.equal(splitIntents("how do I enable versioning and lifecycle rules?").length, 1);
+});

@@ -155,6 +155,39 @@ their absence from the source is not evidence of anything. An answer that fails 
 retried **closed-book** ("answer from the reference material and nothing else"), and if it still
 fails it is **not cached** and the request errors.
 
+### More than one question in a message
+
+Three phrasings are recognised as several questions, not one:
+
+```
+tell me about AWS
+tell me about EC2              -> two intents (newline)
+What is AWS? What is EC2?      -> two intents (question marks)
+tell me about AWS and EC2      -> two intents (coordinated topics)
+tell me about AWS, EC2 and S3  -> three intents
+```
+
+Each intent is resolved against the cache independently, with the *same* rules as a normal
+semantic hit (shared KB chunk + term coverage), and the answers are composed into one response:
+
+```
+x-cache-status : semantic-hit
+x-cache-policy : composed-from-2
+
+Here are answers to your questions.
+**tell me about AWS**   ...
+**tell me about EC2**   ...
+```
+
+Measured: 2 sections / 2,533 chars from two cache lookups and **no model call**; three sections
+/ 3,394 chars from three lookups. If any intent misses, the whole message goes to the model with
+both questions — it never serves a partial answer.
+
+Comparisons are deliberately **not** split: *"what is the difference between a security group and
+a network ACL?"* stays one question, because splitting it produces two half-questions that
+cannot be answered on their own. The same applies to "compare X and Y" and to clause-like
+"and"s without a topic prefix.
+
 ### When the knowledge base has no source
 
 `"What are virtual machines?"` once failed with *"degenerate answer (null)"*. That message was
