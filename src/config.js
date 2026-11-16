@@ -72,17 +72,26 @@ export const config = {
 
   // ---- anti-repetition sampling ----------------------------------------
   // A 7B on a CPU will fall into a repetition loop and emit one line over and
-  // over ("s3 HTTPS encryption" produced the same bullet 15 times). These are
-  // the sampler knobs that stop it:
-  //   frequency/presence penalty -- push down tokens that have appeared
-  //   repeat_penalty           -- penalise any repeated token sequence
-  //   DRY ("Don't Repeat Yourself") -- the strongest of the three; it is
-  //   designed for exactly this failure
+  // over ("s3 HTTPS encryption" produced the same bullet 15 times).
+  //
+  // frequency_penalty and presence_penalty stop it, and -- importantly --
+  // they do NOT cost answer length. Measured on "What are virtual machines?":
+  //
+  //   frequency + presence only            392 tokens, 17 bullets
+  //   + repeat_penalty 1.15                 81 tokens,  4 bullets
+  //   + DRY 0.8                            94 tokens,  4 bullets
+  //
+  // repeat_penalty and DRY penalise any repeated token sequence, and a bullet
+  // list inherently repeats phrasing ("An instance...", "Instances...", "The
+  // AMI..."), so they suppress the structure itself. Five runs of the question
+  // that looped before were clean with frequency + presence alone, and
+  // src/degenerate.js is the backstop for anything that slips through.
+  //
   // The caller may override any of them per request.
   frequencyPenalty: envFloat("FREQUENCY_PENALTY", 0.4),
   presencePenalty: envFloat("PRESENCE_PENALTY", 0.3),
-  repeatPenalty: envFloat("REPEAT_PENALTY", 1.15),
-  dryMultiplier: envFloat("DRY_MULTIPLIER", 0.8),
+  repeatPenalty: envFloat("REPEAT_PENALTY", 1.0),
+  dryMultiplier: envFloat("DRY_MULTIPLIER", 0.0),
   dryBase: envFloat("DRY_BASE", 1.75),
   dryAllowedLength: envInt("DRY_ALLOWED_LENGTH", 2),
   dryPenaltyLastN: envInt("DRY_PENALTY_LAST_N", 64),

@@ -264,5 +264,110 @@
     "title": "Reading a bill and troubleshooting AWS",
     "source": "AWS Documentation — AWS Troubleshooting",
     "text": "AWS troubleshooting starts with identifying which service and which Region are involved, then narrowing by the request id in the response and the entries in CloudTrail. A 4xx is a problem with the request — a policy denied it, a quota was exhausted, or the resource name was taken; a 5xx is a problem on the AWS side. For latency, check CloudWatch's service-level dashboards and the service quotas for the Region. For cost, look for the resources that dominate: idle load balancers, unattached EBS volumes, snapshots that outlive their instances, S3 objects in the wrong storage class, or data transfer out of AWS."
+  },
+  {
+    "id": "ec2-networking",
+    "topic": "ec2",
+    "title": "EC2 networking: interfaces, addresses and key pairs",
+    "source": "AWS Documentation — EC2 User Guide, Networking",
+    "text": "Each EC2 instance gets an elastic network interface, and the interfaces live in your VPC subnets. A primary private IPv4 address is assigned to every interface, and a public IPv4 address is optional: you can assign one at launch, associate one later, or have it assigned per subnet by the VPC's address settings. The subnet's route table decides whether that public address is reachable from the internet. SSH access needs a key pair: when you launch an instance with one, the private key is downloaded once and never again, and it is the only way in unless you also set up a session manager or a bastion host. An instance without a public address reaches the internet only through a NAT gateway."
+  },
+  {
+    "id": "ec2-storage",
+    "topic": "ec2",
+    "title": "EBS volumes, instance store and AMIs",
+    "source": "AWS Documentation — EC2 User Guide, Storage",
+    "text": "Instance store is physical storage attached directly to the instance's host. It is fast, but it cannot be detached, is lost when the instance stops, and is not replicated. EBS volumes are network-attached and persistent: a volume can be detached and reattached to another instance in the same Availability Zone, and it survives the instance it was attached to. gp3 is the general-purpose default and lets you set the provisioned IOPS and throughput independently of the capacity. Snapshots are incremental, are billed per GB stored, and can be copied across Regions or into an AMI. An AMI is a template for launching instances and can carry an encrypted snapshot for the root volume, the instance profile, the key pair and the user data."
+  },
+  {
+    "id": "s3-access",
+    "topic": "s3",
+    "title": "Presigned URLs, bucket policies and access points",
+    "source": "AWS Documentation — S3 User Guide, Access Control",
+    "text": "Access to an S3 object is normally decided by IAM policies evaluated against the requesting identity, plus any bucket policy on the bucket. A presigned URL is a temporary URL signed with an AWS credential, valid for the expiry you set, which lets a client upload or download an object without holding any credentials. S3 Access Points give each application its own entry point with its own bucket and access policies, so a shared bucket does not need a policy per application. Bucket policies and access point policies are resource policies and can grant access to principals from another account. Because the bucket name is the key, a presigned URL must be created with the SDK or the CLI, not by hand."
+  },
+  {
+    "id": "s3-transfer",
+    "topic": "s3",
+    "title": "Multipart uploads, the CLI and Transfer Acceleration",
+    "source": "AWS Documentation — S3 User Guide, Transfers",
+    "text": "Objects larger than 100 MB should be uploaded in parts. A multipart upload creates the object, uploads the parts in parallel, and completes the upload, after which the parts become invisible and the object appears as one. Uncompleted parts are billed, so an aborted multipart upload should always be cleaned up with abort-multipart-upload; a lifecycle rule can do it for you. The AWS CLI is the usual tool for bulk transfers: aws s3 sync copies only changed objects and supports --delete, --exclude and --include filters. S3 Transfer Acceleration moves uploads through an edge location closer to the uploader, which helps for long-distance transfers."
+  },
+  {
+    "id": "iam-policy-example",
+    "topic": "iam",
+    "title": "An IAM policy, and what an ARN is",
+    "source": "AWS Documentation — IAM Policy Elements",
+    "text": "An IAM policy is JSON with a Version, a Statement list, and an Effect, a Resource and optionally a Principal and a Condition. The Resource is identified by an ARN: arn:aws:service:region:account-id:resource-type/resource-id. For example arn:aws:s3:::my-bucket/* is every object in my-bucket, and arn:aws:ec2:eu-west-1:123456789012:instance/* is every instance in that account and Region. A wildcard * matches any value in that segment. Action names are of the form service:Action, for example s3:GetObject or ec2:RunInstances. A Condition narrows the statement, for example by requiring a source VPC endpoint, an MFA context or a session tag."
+  },
+  {
+    "id": "iam-trust",
+    "topic": "iam",
+    "title": "Trust policies and cross-account access",
+    "source": "AWS Documentation — IAM Roles, Trust Policies",
+    "text": "A role has two policies and they do different jobs. The trust policy states who is allowed to assume the role; it is attached to the role and can also be a service role trust such as ec2.amazonaws.com for an instance profile or lambda.amazonaws.com for a function's execution role. The permissions policy states what the role may do once assumed. Both sides of a cross-account role grant are needed: the role's trust policy must name the other account, and that account's identity policy must allow the role. A confused-deputy problem arises if a role trusts a broad principal and the permissions policy is also broad, so keep the trust narrow: a specific account, a specific service, or an external Id."
+  },
+  {
+    "id": "vpc-connectivity",
+    "topic": "vpc",
+    "title": "Peering, Transit Gateway, endpoints and private DNS",
+    "source": "AWS Documentation — Amazon VPC User Guide, Connectivity",
+    "text": "A VPC peering connection is a direct, private link between two VPCs; routes must be added on both sides, and a peered VPC cannot transit through a third. A Transit Gateway connects many VPCs and on-premises networks through a central router, and supports route tables that segment which networks can talk. A gateway endpoint is free and is available for S3 and DynamoDB only; an interface endpoint uses PrivateLink to expose any service, and charges per hour and per GB. A private hosted zone in Route 53 is what lets a service name such as a bucket endpoint resolve to its private address inside the VPC, so traffic never leaves the network."
+  },
+  {
+    "id": "lambda-runtimes",
+    "topic": "lambda",
+    "title": "Lambda runtimes, packaging and cold starts",
+    "source": "AWS Documentation — AWS Lambda Developer Guide",
+    "text": "A function is a ZIP archive of source code, a dependency manifest and a runtime, or a container image. A zip deployment is limited to 50 MB zipped and 250 MB unzipped including layers, which is often too small for a machine-learning dependency; the container route supports up to 10 GB. Layers are shared libraries and can carry the AWS SDK, so it does not have to be bundled. A cold start is the cost of provisioning an execution environment and initialising the runtime: it is longer for Java and .NET than for Python or Node.js, and it can be reduced with provisioned concurrency or by making the initialisation handler light. Lambda extensions are the supported way to ship an observability agent without packaging it into the function."
+  },
+  {
+    "id": "lambda-secrets",
+    "topic": "lambda",
+    "title": "Lambda execution roles, environment variables and secrets",
+    "source": "AWS Documentation — AWS Lambda Developer Guide, Configuration",
+    "text": "Every function has an execution role, and it is what the function uses to call other AWS services; it should be as narrow as the function's actual needs. Environment variables are a convenient way to pass configuration, but anything sensitive in them is visible to anyone who can read the function configuration, so it is not a place for secrets. Secrets Manager and SSM Parameter Store are the supported alternatives, and Secrets Manager can be read at invocation time through an extension or explicitly in the handler. Resource policies and VPC-attached functions can also restrict who may invoke the function."
+  },
+  {
+    "id": "cloudwatch-alarms",
+    "topic": "cloudwatch",
+    "title": "CloudWatch alarms, composite alarms and billing alerts",
+    "source": "AWS Documentation — Amazon CloudWatch User Guide, Alarms",
+    "text": "An alarm watches a metric over a period and enters the ALARM state when the statistic breaches a threshold, optionally for a number of evaluation periods so a brief spike does not page anyone. An alarm can notify SNS, which is how it reaches an email address, a chat channel or a queue. A composite alarm combines several child alarms with an AND or OR, so one page can summarise a whole service. Billing alarms and budgets are a different mechanism: they watch the Cost Explorer service quota rather than a metric. Dashboards group the widgets for a service so an operator can see the metric, the alarm and the log queries on one page."
+  },
+  {
+    "id": "rds-backups",
+    "topic": "database",
+    "title": "RDS backups, snapshots, replicas and failover",
+    "source": "AWS Documentation — Amazon RDS User Guide",
+    "text": "RDS takes an automated backup of the database every day and keeps the transaction logs, so a point-in-time restore is possible to any second within the retention window. Snapshots are manual and are kept until deleted, and a snapshot can be copied to another Region. A Multi-AZ deployment runs a synchronous standby in a second Availability Zone and fails over automatically, which changes the endpoint but not the connection details. A read replica is asynchronous, so it can lag, but it can be promoted to a primary. Neither of them replaces backups: a Multi-AZ deployment protects against an instance or AZ failure, not against a mistaken DELETE."
+  },
+  {
+    "id": "dynamodb-capacity",
+    "topic": "database",
+    "title": "DynamoDB capacity, indexes and streams",
+    "source": "AWS Documentation — Amazon DynamoDB Developer Guide",
+    "text": "DynamoDB is priced on capacity consumed rather than storage alone. On-demand capacity charges per read and per write request and suits unpredictable traffic; provisioned capacity reserves read and write capacity units and is cheaper for steady traffic, and can be auto-scaling between a minimum and a maximum. A table's primary key is a partition key plus an optional sort key, and a global secondary index lets you query by a different attribute at the cost of additional writes and storage. DynamoDB Streams capture the changes to a table in near real time, which is how a projection, a search index or an audit trail is fed from the same data."
+  },
+  {
+    "id": "apigateway-throttling",
+    "topic": "networking",
+    "title": "API Gateway stages, throttling and usage plans",
+    "source": "AWS Documentation — Amazon API Gateway Developer Guide",
+    "text": "A REST API is versioned by stages, and each stage has its own deployment, variables and settings. Stage variables hold configuration that a Lambda proxy integration can read, which is how one stage can point at a different downstream. Throttling can be set per stage and per method, and a usage plan adds a quota and an API key so a third-party consumer gets a rate limit and can be billed or revoked. Lambda proxy integration passes the whole event to the function and expects the function to build the HTTP response, which keeps the routing logic in code rather than in the API definition."
+  },
+  {
+    "id": "cost-rightsizing",
+    "topic": "governance",
+    "title": "Reducing an AWS bill",
+    "source": "AWS Documentation — AWS Cost Management",
+    "text": "The levers, in the order worth pulling: stop what is not used -- idle load balancers, unattached EBS volumes, stopped instances with attached volumes, and forgotten snapshots; move data to a colder storage class; buy capacity the right way -- Savings Plans for steady workloads, Spot for interruptible ones, Graviton for scale-out services, and commitments where the workload is genuinely steady; and size things correctly, since an oversized instance costs proportionally more. Data transfer out of AWS is frequently the largest single line on an otherwise small bill, and it can usually be reduced by caching, by using a CDN, or by keeping the traffic inside the same Region."
+  },
+  {
+    "id": "observability-tracing",
+    "topic": "governance",
+    "title": "Tracing a request across services",
+    "source": "AWS Documentation — AWS X-Ray Developer Guide",
+    "text": "X-Ray traces a request as it passes through the services that handle it, so a slow response can be attributed to a specific downstream call rather than to the front end. Segments record the time spent in each service and subsegment, and annotations carry business context such as a customer id. Active tracing requires the AWS SDK's X-Ray recorder or the OpenTelemetry SDK; passive tracing works by adding a header to the request. CloudWatch ServiceLens combines traces, metrics and logs for a service so the three views can be read together. In practice the fastest path to 'why was this slow' is the service's CloudWatch dashboard first, then the trace for the one slow request."
   }
 ]

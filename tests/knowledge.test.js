@@ -72,13 +72,29 @@ test("retrieval returns the chunks in descending relevance", async () => {
   }
 });
 
-test("a canonical question retrieves ONE chunk, not a grab-bag", async () => {
+test("a canonical question does NOT retrieve a grab-bag", async () => {
   // Without the relative margin, "aws" pulled in the overview, RDS *and* the
   // troubleshooting chunk, and the answer came back about RDS and billing
-  // rather than about AWS.
+  // rather than about AWS. A chunk may join the context if it is nearly as
+  // relevant OR from the top chunk's own topic -- but not merely because it
+  // mentions the domain.
   const chunks = await retrieve("aws", 3);
-  assert.equal(chunks.length, 1, `expected one canonical chunk, got [${chunks.map((c) => c.id).join(", ")}]`);
-  assert.equal(chunks[0].id, "aws-overview");
+  assert.ok(chunks.length >= 1);
+  const top = chunks[0];
+  assert.equal(top.id, "aws-overview");
+  for (const c of chunks.slice(1)) {
+    assert.equal(c.topic, top.topic,
+      `"${c.id}" [${c.topic}] is a different topic from "${top.id}" [${top.topic}]`);
+  }
+});
+
+test("a specific question expands within its own topic", async () => {
+  // "What are virtual machines?" gets the other EC2 chunks as complementary
+  // detail -- which is what makes the answer substantial (111 tokens with one
+  // chunk, 393 with three).
+  const chunks = await retrieve("What are virtual machines?", 3);
+  assert.ok(chunks.length >= 2, `expected the EC2 topic to expand, got [${chunks.map((c) => c.id).join(", ")}]`);
+  for (const c of chunks) assert.equal(c.topic, "ec2");
 });
 
 test("a genuine tie retrieves more than one chunk", async () => {
@@ -90,9 +106,11 @@ test("a genuine tie retrieves more than one chunk", async () => {
 });
 
 test("the margin is configurable", async () => {
-  const tight = await retrieve("How do security groups differ from network ACLs?", 4, { margin: 0.001 });
-  assert.equal(tight.length, 1, "a zero margin keeps only the best chunk");
-  const loose = await retrieve("How do security groups differ from network ACLs?", 4, { margin: 0.5 });
+  const tight = await retrieve("How do security groups differ from network ACLs?", 4,
+    { margin: 0.001, maxExtra: 0 });
+  assert.equal(tight.length, 1, "a zero margin and no topic expansion keeps only the best chunk");
+  const loose = await retrieve("How do security groups differ from network ACLs?", 4,
+    { margin: 0.5, maxExtra: 0 });
   assert.ok(loose.length > 1, "a wide margin keeps more");
 });
 

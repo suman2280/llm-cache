@@ -37,6 +37,7 @@ import { DomainPolicy, OPEN_POLICY } from "./domain.js";
 import { overlapVerdict } from "./lexicon.js";
 import { retrieve, groundRequest, PREFILL, assembleAnswer } from "./knowledge.js";
 import { detectDegeneracy } from "./degenerate.js";
+import { referenceTerms, referenceIdentifiers, checkGrounding } from "./grounding.js";
 import { DOMAIN } from "./corpus.js";
 import {
   requestFingerprint, scopeOf, semanticText, lastUserText,
@@ -473,15 +474,20 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   // with no mention of EC2 at all.
   let groundedBody = body;
   let groundingUsed = 0;
+  let refTerms = new Set();
+  let refIds = new Set();
+  let chunks = [];
   try {
     // Retrieve with the QUESTION, not the rendered conversation. The rendered
     // form carries a "USER:\n" prefix, and that prefix is enough to reorder
     // the results: for "aws" it put "IAM users" and "IAM roles" above the
     // overview chunk, so the answer came back about IAM instead of about AWS.
-    const chunks = await retrieve(prompt || semText, config.groundingTopK);
+    chunks = await retrieve(prompt || semText, config.groundingTopK);
     if (chunks.length) {
       groundedBody = groundRequest(body, chunks, policy.mode !== "off" ? policy : null);
       groundingUsed = chunks.length;
+      refTerms = referenceTerms(chunks);
+      refIds = referenceIdentifiers(chunks);
     }
   } catch (err) {
     console.warn(`[knowledge] retrieval failed, answering ungrounded: ${err.message}`);
@@ -498,9 +504,12 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
     // with a hotter sample, and discarded if it happens again.
     for (let attempt = 0; attempt <= config.degenerateRetries; attempt++) {
       const retry = attempt > 0;
+      // The retry is CLOSED BOOK: the first answer was not grounded in the
+      // reference material, which happens when a small model is pushed for
+      // more detail than the material supports.
       const reqBody = retry
         ? {
-          ...groundedBody,
+          ...groundRequest(body, chunks, policy.mode !== "off" ? policy : null, { closedBook: true }),
           temperature: Math.min(1.2, Number(groundedBody.temperature ?? 0.3) + 0.3),
           seed: undefined, // a fresh sample
         }
@@ -520,8 +529,22 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
 
       const answer = answerText(payload) ?? "";
       const verdict = detectDegeneracy(answer);
-      if (!verdict.degenerate) { degeneracy = null; break; }
-      degeneracy = verdict;
+      if (!verdict.degenerate && refTerms.size) {
+        // The answer must be grounded in the reference material it was given.
+        // Asking a small model for more makes it fabricate -- "aws" with six
+        // to nine bullets produced a "t2.micro" free-tier instance type that
+        // appears nowhere in the reference.
+        const g = checkGrounding(answer, refTerms, refIds);
+        if (!g.grounded) {
+          degeneracy = {
+            degenerate: true,
+            reason: `only ${Math.round(g.ratio * 100)}% of the answer's terms are in the ` +
+              `reference material (novel: ${g.novel.slice(0, 6).join(", ")})`,
+          };
+        }
+      }
+      if (!verdict.degenerate && !degeneracy) { degeneracy = null; break; }
+      if (!degeneracy) degeneracy = verdict;
       console.warn(`[generation] degenerate output (${verdict.reason}) -- attempt ${attempt + 1}`);
       if (attempt === config.degenerateRetries) {
         // give up: return an error rather than a broken answer, and cache nothing

@@ -124,6 +124,61 @@ The context window had to grow from 512 to **2048**: three chunks plus a questio
 answer is ~1600 tokens, and the 512-token window rejected the request outright. The KV cache
 cost of 2048 is ~115 MB.
 
+### Making the answers bigger — and not making them up
+
+Asking for more made the model **fabricate**:
+
+```
+"aws", asked for six to nine bullets, produced
+  - AWS offers an EC2 instance type called 't2.micro' which is free-tier eligible
+  - These instances are billed at a rate of $0.0000002 per second
+```
+
+None of that is in the reference material. It reads well and it is false — exactly what the SOP
+forbids. So bigger answers needed two things: **more true material**, and **a check that the
+answer stays true**.
+
+**More material.** The knowledge base grew to **53 chunks**, and retrieval now expands within the
+top chunk's *topic* — a question about EC2 gets the other EC2 chunks (instance types, storage,
+networking, pricing) as complementary detail, rather than three unrelated chunks. A question
+about S3 gets the rest of S3.
+
+**A check.** Every generated answer is compared against the reference material it was given. The
+signal is *specific identifiers*, not vocabulary:
+
+| | grounded | fabricated |
+|---|---|---|
+| novel identifiers | none | `t2.micro`, `RunInstances`, `$0.0000002`, `EC2` |
+
+Generic words like "console path" or "API action" are ignored — the instruction asks for them, so
+their absence from the source is not evidence of anything. An answer that fails the check is
+retried **closed-book** ("answer from the reference material and nothing else"), and if it still
+fails it is **not cached** and the request errors.
+
+### The sampler was cutting the answers in half
+
+The anti-repetition penalties I added to stop the loop were also suppressing the answer's
+structure, because a bullet list inherently repeats phrasing:
+
+| sampler | tokens | bullets |
+|---|---|---|
+| frequency + presence only | **392** | 17 |
+| + `repeat_penalty` 1.15 | 81 | 4 |
+| + DRY 0.8 | 94 | 4 |
+
+`repeat_penalty` and DRY penalise *any* repeated token sequence, so they penalise
+"Instance...", "Instances...", "The AMI...". They are now **off by default**, and
+`frequency_penalty` + `presence_penalty` carry the loop protection on their own — five runs of
+the question that looped before were clean. The degeneracy detector remains the backstop.
+
+Answer sizes now, measured through the app:
+
+```
+aws                                          261 tokens, 10 bullets
+What are virtual machines?                   393 tokens, 16 bullets
+How do I enable versioning on an S3 bucket?  155 tokens,  6 bullets
+```
+
 ### Getting a *long* answer out of a 7B
 
 Asking does not work. This model ignores length and shape instructions outright:

@@ -52,26 +52,33 @@ async function vectors() {
 /**
  * Retrieve the most relevant chunks for a query.
  *
- * `margin` is a RELATIVE cutoff: only chunks within `margin` of the best
- * score are kept. Without it, a broad question pulls in several unrelated
- * chunks and the model writes a grab-bag -- "aws" retrieved the overview, RDS
- * *and* the troubleshooting chunk, and the answer came back about RDS and
- * billing rather than about AWS.
+ * Two rules, because a broad question pulls in several unrelated chunks and
+ * the model writes a grab-bag -- "aws" retrieved the overview, RDS *and* the
+ * troubleshooting chunk, and the answer came back about RDS and billing
+ * rather than about AWS.
  *
- * Measured spreads (distance below the top chunk):
+ *  1. RELATIVE MARGIN -- a chunk joins the context if it is within `margin`
+ *     of the best score. Measured spreads (distance below the top chunk):
  *
- *   "aws"                                    0.078  0.118   -> one chunk
- *   "What is AWS?"                           0.076  0.134   -> one chunk
- *   "How do I enable versioning on S3?"      0.124  0.161   -> one chunk
- *   "How do security groups differ from NACLs?" 0.117        -> one chunk
- *   "What is the shared responsibility model?"  0.278        -> one chunk
- *   "redis aws"                             0.017  0.093   -> two chunks (a tie)
+ *       "aws"                                       0.078  -> one chunk
+ *       "What is AWS?"                              0.076  -> one chunk
+ *       "How do I enable versioning on S3?"         0.124  -> one chunk
+ *       "How do security groups differ from NACLs?" 0.117  -> one chunk
+ *       "What is the shared responsibility model?"  0.278  -> one chunk
+ *       "redis aws"                                0.017  -> two chunks (a tie)
  *
- * A margin of 0.05 separates the two groups cleanly.
+ *  2. SAME-TOPIC EXPANSION -- chunks from the TOP CHUNK'S TOPIC also join,
+ *     up to `maxExtra` of them. A question about EC2 gets the other EC2
+ *     chunks (instance types, pricing, auto scaling) as complementary detail;
+ *     a question about S3 versioning gets the rest of the S3 material. This
+ *     is what makes the answers substantial: "What are virtual machines?"
+ *     goes from one chunk (111 tokens) to four (EC2 instances, instance types,
+ *     pricing, auto scaling), and the answer can cover the instance, the type
+ *     and the bill.
  *
  * @returns {Promise<Array<{id,topic,title,source,text,score}>>}
  */
-export async function retrieve(query, topK = 3, { margin = 0.05 } = {}) {
+export async function retrieve(query, topK = 3, { margin = 0.05, topicMargin = 0.25, maxExtra = 2 } = {}) {
   const kb = knowledgeBase();
   if (!kb.length) return [];
   const vecs = await vectors();
@@ -83,9 +90,21 @@ export async function retrieve(query, topK = 3, { margin = 0.05 } = {}) {
     scored.push({ ...kb[i], score: Number(dot.toFixed(4)) });
   }
   scored.sort((a, b) => b.score - a.score);
-  const top = scored[0]?.score ?? 0;
-  const kept = scored.filter((c) => top - c.score <= margin);
-  return kept.slice(0, topK);
+
+  const top = scored[0];
+  if (!top) return [];
+  const kept = [top];
+  let extra = 0;
+  for (const c of scored.slice(1)) {
+    if (kept.length >= topK) break;
+    const gap = top.score - c.score;
+    const byMargin = gap <= margin;
+    const byTopic = c.topic === top.topic && gap <= topicMargin && extra < maxExtra;
+    if (!byMargin && !byTopic) continue;
+    kept.push(c);
+    if (byTopic) extra += 1;
+  }
+  return kept;
 }
 
 /**
@@ -144,16 +163,36 @@ export function assembleAnswer(prefill, continuation) {
  * one of its bullets. With the instruction first, the reference material reads
  * as the content and the shape is followed rather than quoted.
  */
-export function buildSystemPrompt(base, chunks, domain) {
+export function buildSystemPrompt(base, chunks, domain, { closedBook = false } = {}) {
   const domainLine = domain?.description
     ? `You answer only about ${domain.description}. If a question is outside that domain, say so plainly.`
     : "";
+  // The shape that measured best: six to nine bullets, each a COMPLETE
+  // sentence carrying the specific detail. Compared on three queries:
+  //
+  //   "four to six bullet points, one fact per bullet"    118-207 tokens
+  //   "six to nine bullet points"                          137-181 tokens
+  //   "six to nine bullets, each a complete sentence"     146-381 tokens  <- this one
+  //
+  // Asking for more is only safe because the answer is checked against the
+  // reference material: a small model asked for more detail than the material
+  // supports invents it ("aws" with six to nine bullets produced a "t2.micro"
+  // free-tier instance type that appears nowhere in the reference).
   const shape =
-    "Write the answer as one direct opening sentence, then three to five short bullet\n" +
-    "points of specific facts (the AWS service and resource names, the console path or\n" +
-    "API action, the limits and defaults, and the caveats), and finish with a single\n" +
-    "sentence on what to watch out for. Be specific and complete rather than brief.";
-  return `${base || "You are an AWS enterprise assistant."} ${domainLine}\n\n${shape}${renderContext(chunks)}`;
+    "Write the answer as one direct opening sentence, then six to nine short bullet\n" +
+    "points. Each bullet must be a complete sentence giving the specific detail --\n" +
+    "the service and resource names, the console path or API action, the limits or\n" +
+    "defaults, the cost or billing, the caveats, and the related services. Finish\n" +
+    "with a single sentence on what to watch out for. Be specific and complete\n" +
+    "rather than brief.";
+  // The closed-book variant is used on the retry, when the first answer was not
+  // grounded in the reference material.
+  const grounding = closedBook
+    ? "Answer from the reference material below and nothing else. Do not add facts that\n" +
+      "are not in it. If the reference material does not cover part of the question, say\n" +
+      "which part is missing.\n\n"
+    : "";
+  return `${base || "You are an AWS enterprise assistant."} ${domainLine}\n\n${grounding}${shape}${renderContext(chunks)}`;
 }
 
 /**
@@ -161,11 +200,11 @@ export function buildSystemPrompt(base, chunks, domain) {
  * message. The ORIGINAL messages stay the cache key -- the grounding is an
  * inference-time detail and must not change what the cache is keyed on.
  */
-export function groundRequest(body, chunks, domain) {
+export function groundRequest(body, chunks, domain, opts = {}) {
   const messages = Array.isArray(body?.messages) ? body.messages : [];
   const systemIdx = messages.findIndex((m) => m?.role === "system");
   const grounded = buildSystemPrompt(
-    systemIdx >= 0 ? messages[systemIdx].content : null, chunks, domain,
+    systemIdx >= 0 ? messages[systemIdx].content : null, chunks, domain, opts,
   );
   const out = messages.map((m) => ({ ...m }));
   if (systemIdx >= 0) out[systemIdx] = { ...out[systemIdx], content: grounded };
