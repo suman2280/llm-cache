@@ -18,7 +18,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  referenceTerms, referenceIdentifiers, checkGrounding, specificIdentifiers,
+  referenceTerms, referenceIdentifiers, checkGrounding, specificIdentifiers, properNouns,
 } from "../src/grounding.js";
 
 const CHUNKS = [{
@@ -85,4 +85,58 @@ test("the 'Key points:' heading is ours, not the model's content", () => {
   const withHeading = "Key points:\n- AWS offers over 200 services.";
   const g = checkGrounding(withHeading, referenceTerms(CHUNKS), referenceIdentifiers(CHUNKS));
   assert.ok(g.grounded);
+});
+
+// ---------------------------------------------------------------------------
+// Both signals must hold.
+//
+// The identifier signal alone has a blind spot: a single-capitalised proper
+// noun ("Redis", "Elasticache") is invisible to a CamelCase/acronym matcher,
+// so an answer about a service the knowledge base has never heard of could
+// pass on the strength of the two identifiers it happened to get right.
+//
+// Measured separation across eight real answers:
+//   sourceable          idRatio 0.94-1.00   termRatio 0.67-0.98
+//   NOT sourceable      idRatio 0.17-0.59   termRatio 0.00-0.31
+
+test("single-capitalised proper nouns are detected", () => {
+  // a CamelCase matcher cannot see "Redis" or "Elasticache"; they are
+  // reported so a rejection can name them, but they are NOT counted in the
+  // identifier ratio (ordinary capitalised English would too)
+  const nouns = properNouns("Redis is used with Amazon Elasticache for Redis.");
+  assert.ok(nouns.has("Redis"));
+  assert.ok(nouns.has("Elasticache"));
+  assert.ok(nouns.has("Amazon"));
+  assert.ok(!specificIdentifiers("Redis is used with Amazon Elasticache.").has("p:Redis"));
+});
+
+test("a line-initial capitalised word is prose, not a proper noun", () => {
+  const nouns = properNouns("- Redis is a cache.\n- Amazon hosts it.");
+  assert.ok(!nouns.has("Redis"), "the first word of a bullet is sentence-initial");
+  assert.ok(!nouns.has("Amazon"));
+});
+
+test("an answer that names nothing invented but is mostly not from the source is refused", () => {
+  // every identifier it names (AWS, CloudWatch) is legitimate, but the answer
+  // is about a service the reference has never heard of
+  const refTerms = referenceTerms(CHUNKS);
+  const refIds = referenceIdentifiers(CHUNKS);
+  const answer = `Key points:
+- Redis is an in-memory data store used with Amazon Elasticache for Redis.
+- Customers can provision and manage Redis clusters through the AWS Management Console.
+- Customers can monitor their Redis clusters using CloudWatch metrics and logs.
+- The service supports replication and automatic failover with multi-node clusters.`;
+  const g = checkGrounding(answer, refTerms, refIds);
+  assert.ok(!g.grounded, "the term signal must catch what the identifier signal cannot");
+  assert.ok(g.termRatio < 0.5, `termRatio was ${g.termRatio}`);
+});
+
+test("a well-sourced answer passes both signals", () => {
+  const refTerms = referenceTerms(CHUNKS);
+  const refIds = referenceIdentifiers(CHUNKS);
+  const answer = `Key points:
+- Amazon Web Services (AWS) is a cloud platform provided by Amazon that offers over 200 services.
+- A customer runs in its own logically isolated Virtual Private Cloud (VPC).`;
+  const g = checkGrounding(answer, refTerms, refIds);
+  assert.ok(g.grounded, `must pass: id=${g.idRatio} term=${g.termRatio}`);
 });

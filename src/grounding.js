@@ -28,8 +28,21 @@
 
 import { specificTerms } from "./lexicon.js";
 
-/** Default threshold. Tuned on the measured separation above. */
+/**
+ * The two thresholds.
+ *
+ * GROUNDING_THRESHOLD applies to the IDENTIFIER ratio: the fraction of the
+ * answer's specific names that are in the reference. A fabricated answer
+ * scores ~0.17 (t2.micro, RunInstances, $0.0000002, EC2 -- all invented); a
+ * good answer scores 0.85-1.0.
+ *
+ * TERM_THRESHOLD applies to the CONTENT-WORD ratio: the fraction of the
+ * answer's content words that come from the reference. A good answer scores
+ * ~0.75-1.0; an answer about a service the knowledge base has never heard of
+ * scores 0.32 even when every identifier it names happens to be legitimate.
+ */
 export const GROUNDING_THRESHOLD = 0.45;
+export const TERM_THRESHOLD = 0.5;
 
 /**
  * The words that betray a fabrication: SPECIFIC identifiers and numbers.
@@ -79,6 +92,33 @@ export function specificIdentifiers(text) {
     if (GENERIC_ACRONYMS.has(m[0].toLowerCase())) continue;
     out.add(`a:${m[0]}`);
   }
+
+  return out;
+}
+
+/**
+ * Capitalised words that are NOT the first word of a line: proper nouns like
+ * "Redis" or "Elasticache", which a CamelCase matcher cannot see.
+ *
+ * These are REPORTED but NOT counted in the identifier ratio: ordinary
+ * capitalised English in this domain ("the AWS Management Console", "S3
+ * Standard") would otherwise register as fabricated names. The content-word
+ * signal is what catches an answer the source does not support.
+ */
+export function properNouns(text) {
+  const out = new Set();
+  const body = String(text ?? "");
+  for (const line of body.split(/\n/)) {
+    const trimmed = line.replace(/^\s*[-*\u2022]?\s*/, "");
+    trimmed.split(/\s+/).forEach((word, i) => {
+      const bare = word.replace(/[^A-Za-z0-9-]/g, "");
+      if (bare.length < 3) return;
+      if (!/^[A-Z][a-z]/.test(bare)) return; // Capitalised, then lowercase
+      if (i === 0) return;                     // line-initial: usually prose
+      if (GENERIC_ACRONYMS.has(bare.toLowerCase())) return;
+      out.add(bare);
+    });
+  }
   return out;
 }
 
@@ -106,7 +146,7 @@ export function referenceIdentifiers(chunks) {
  * @param {Set<string>} refIds
  * @returns {{ratio: number, novel: string[], total: number, grounded: boolean}}
  */
-export function checkGrounding(answer, refTerms, refIds, threshold = GROUNDING_THRESHOLD) {
+export function checkGrounding(answer, refTerms, refIds, threshold = GROUNDING_THRESHOLD, termThreshold = TERM_THRESHOLD) {
   // The "Key points:" heading is ours, not the model's content.
   const text = String(answer ?? "").replace(/^\s*Key points:\s*/i, "");
 
@@ -122,17 +162,45 @@ export function checkGrounding(answer, refTerms, refIds, threshold = GROUNDING_T
 
   // The identifier signal is the precise one; the term signal is the broad
   // one. A fabricated answer fails the first; a merely reworded answer passes.
+  // BOTH signals must hold.
+  //
+  // The identifier signal catches invented names ("t2.micro", "RunInstances").
+  // The term signal catches everything else -- an answer can name nothing
+  // invented and still be mostly not-from-the-source. Measured: the answer
+  // about Redis and "Amazon Elasticache" named only AWS and CloudWatch (both
+  // in the source) but covered just 21 of 66 content words from it.
   const ratio = ids.length ? idRatio : termRatio;
   const novel = novelIds.length ? novelIds : novelTerms;
 
+  // proper nouns are reported alongside, so a rejection can name them
+  const nouns = [...properNouns(text)].filter((n) => !refTerms.has(n.toLowerCase()));
+
+  const idOk = ids.length ? idRatio >= threshold : true;
+  const termOk = termRatio >= termThreshold;
+
+  // Name the signal that actually failed. Reporting "only 100% of the answer's
+  // specifics are in the reference" is worse than saying nothing.
+  let reason = null;
+  if (!idOk) {
+    reason = `only ${Math.round(idRatio * 100)}% of the answer's specific names are in the ` +
+      `reference (not from the source: ${novelIds.slice(0, 6).join(", ")})`;
+  } else if (!termOk) {
+    reason = `only ${Math.round(termRatio * 100)}% of the answer's content words are in the ` +
+      `reference (not from the source: ${novelTerms.slice(0, 6).join(", ")})`;
+  }
+
   return {
     ratio: Number(ratio.toFixed(4)),
+    idRatio: Number(idRatio.toFixed(4)),
+    termRatio: Number(termRatio.toFixed(4)),
     // the two signals kept apart: novelIdentifiers are the evidence of
     // fabrication, novelTerms are only ordinary rewording
     novelIdentifiers: novelIds,
     novelTerms,
+    novelProperNouns: nouns,
     novel,
     total: ids.length || terms.length,
-    grounded: ratio >= threshold && (novelIds.length === 0 || idRatio >= 0.85),
+    grounded: idOk && termOk,
+    reason,
   };
 }

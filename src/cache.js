@@ -266,7 +266,7 @@ function deterministicTier(envelope) {
 // ---------------------------------------------------------------------------
 // The main entry point
 
-export async function handleChat(body, { envelopeHeader = "", role = "author", maxTokens } = {}) {
+export async function handleChat(body, { envelopeHeader = "", role = "author", maxTokens, requireGrounded = false } = {}) {
   const started = performance.now();
   const envelope = parseEnvelope(envelopeHeader);
   const sClass = samplingClass(body);
@@ -292,6 +292,9 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   const ctx = {
     scope, symbolFp, minReviewStatus, body, envelope,
     queryText: prompt || semText,
+    // The content path is strict: an ungrounded answer may not become content.
+    // The chat path serves it labelled and uncached.
+    requireGrounded,
   };
   const timings = { embed_ms: null, redis_ms: null, infer_ms: null };
 
@@ -540,7 +543,8 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
 
   const t2 = performance.now();
   let payload;
-  let degeneracy = null;
+  let failure = null;
+  let grounding = null;
   try {
     // A 7B on a CPU sometimes falls into a repetition loop and emits one line
     // over and over ("s3 HTTPS encryption" produced the same bullet 15
@@ -548,6 +552,9 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
     // to every future request for that question -- so it is detected, retried
     // with a hotter sample, and discarded if it happens again.
     for (let attempt = 0; attempt <= config.degenerateRetries; attempt++) {
+      // Each attempt starts clean: a failure from the previous attempt must not
+      // condemn a good answer from this one.
+      failure = null;
       const retry = attempt > 0;
       // The retry is CLOSED BOOK: the first answer was not grounded in the
       // reference material, which happens when a small model is pushed for
@@ -580,32 +587,42 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
         // to nine bullets produced a "t2.micro" free-tier instance type that
         // appears nowhere in the reference.
         const g = checkGrounding(answer, refTerms, refIds);
+        grounding = g;
         if (!g.grounded) {
-          degeneracy = {
-            degenerate: true,
-            reason: `only ${Math.round(g.ratio * 100)}% of the answer's terms are in the ` +
-              `reference material (novel: ${g.novel.slice(0, 6).join(", ")})`,
-          };
+          failure = { kind: "ungrounded", reason: g.reason ?? "not grounded in the reference" };
         }
       }
-      if (!verdict.degenerate && !degeneracy) { degeneracy = null; break; }
-      if (!degeneracy) degeneracy = verdict;
-      console.warn(`[generation] degenerate output (${verdict.reason}) -- attempt ${attempt + 1}`);
+      if (!verdict.degenerate && !failure) { failure = null; break; }
+      if (!failure) {
+        failure = { kind: "degenerate", reason: verdict.reason ?? "the answer repeated itself" };
+      }
+      console.warn(`[generation] ${failure.kind} output (${failure.reason}) -- attempt ${attempt + 1}`);
       if (attempt === config.degenerateRetries) {
-        // Give up: return an error rather than a broken answer, and cache
-        // nothing. The two failure modes need different wording -- a
-        // repetition loop and an ungrounded answer are different problems.
-        const err = new Error(
-          verdict.reason?.startsWith("only ")
-            ? `the answer could not be grounded in the reference material ` +
-              `(${verdict.reason}); the knowledge base has no source for this question. ` +
-              `Nothing was cached.`
-            : `the model produced a degenerate answer (${verdict.reason}) and it could ` +
-              `not be regenerated; nothing was cached.`
-        );
-        err.statusCode = 502;
-        err.public = true;
-        throw err;
+        if (failure.kind === "degenerate") {
+          // A repetition loop is never servable.
+          const err = new Error(
+            `the model produced a degenerate answer (${failure.reason}) and it could ` +
+            "not be regenerated; nothing was cached."
+          );
+          err.statusCode = 502;
+          err.public = true;
+          throw err;
+        }
+        // An ungrounded answer is servable but must NOT be cached: it would
+        // otherwise be replayed to every later request as if it were sourced.
+        // The chat path serves it with a warning; the content path refuses it,
+        // because content is what the SOP requires to be source-grounded.
+        if (ctx.requireGrounded) {
+          const err = new Error(
+            `the answer could not be grounded in the reference material ` +
+            `(${failure.reason}); the knowledge base has no source for this question. ` +
+            `Nothing was cached.`
+          );
+          err.statusCode = 502;
+          err.public = true;
+          throw err;
+        }
+        break; // serve it, labelled, uncached
       }
     }
   } catch (err) {
@@ -625,7 +642,9 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
 
   // Store for tiers 1 and 2. An out-of-domain answer is NEVER stored: it must
   // not be able to resurface later as a "semantic hit" for something else.
-  if (!ctx.outOfDomain && !degeneracy) {
+  // Nothing that failed a check may be cached. An ungrounded answer replayed
+  // to every later request would be worse than no cache at all.
+  if (!ctx.outOfDomain && !failure) {
   try {
     const reviewStatus = role === "author" ? "draft" : "needs_academic_review";
     const entryId = db().insertEntry({
@@ -667,7 +686,9 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
     latency_ms: round1(latency), similarity: null, threshold: config.distanceThreshold,
     prompt, response: answerText(payload), tier: "miss",
     embed_ms: timings.embed_ms, redis_ms: timings.redis_ms, infer_ms: timings.infer_ms,
-    reason: groundingUsed ? `grounded on ${groundingUsed} reference chunk(s)` : null,
+    reason: failure?.kind === "ungrounded"
+      ? `not cached: ${failure.reason}`
+      : (groundingUsed ? `grounded on ${groundingUsed} reference chunk(s)` : null),
   });
   db().increment(["requests", "misses", "model_invocations"]);
   if (ctx.outOfDomain) db().increment(["out_of_domain"]);
@@ -682,7 +703,10 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
       "x-redis-ms": timings.redis_ms != null ? String(timings.redis_ms) : "",
       "x-cache-policy": ctx.outOfDomain
         ? "out-of-domain"
-        : (ctx.cacheDegraded ? "cache-degraded" : "miss"),
+        : (failure?.kind === "ungrounded"
+          ? "ungrounded"
+          : (ctx.cacheDegraded ? "cache-degraded" : "miss")),
+      ...(grounding ? { "x-grounding": String(grounding.ratio) } : {}),
     },
     event: { prompt, response: answerText(payload), embed_ms: timings.embed_ms, redis_ms: timings.redis_ms },
   };

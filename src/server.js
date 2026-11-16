@@ -201,6 +201,7 @@ export async function build() {
       };
       const out = await cache.handleChat(body, {
         envelopeHeader: encodeEnvelope(full), role, maxTokens: 400,
+        requireGrounded: true,
       });
       db().insertEntry({
         fingerprint: req.headers["x-content-envelope"] ? "" : "",

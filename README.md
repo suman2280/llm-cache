@@ -155,6 +155,47 @@ their absence from the source is not evidence of anything. An answer that fails 
 retried **closed-book** ("answer from the reference material and nothing else"), and if it still
 fails it is **not cached** and the request errors.
 
+### When the knowledge base has no source
+
+`"What are virtual machines?"` once failed with *"degenerate answer (null)"*. That message was
+wrong in two ways: the failure was **grounding**, not a repetition loop, and the reason printed
+came from the wrong variable.
+
+The behaviour is now:
+
+```
+"What was the AWS us-east-1 outage on 5 December 2021?"
+  x-cache-status : miss
+  x-cache-policy : ungrounded
+  x-grounding    : 0.14
+  cached         : NO
+```
+
+The answer is **served, but labelled and never cached** — replaying an unsourced answer to every
+later request would be worse than no cache at all. Ask it again and it misses again. The strict
+rule stays on `/content/generate`, where an ungrounded answer is an error: content is what the SOP
+requires to be source-grounded.
+
+The check looks at two signals, and **both** must hold:
+
+| | specific names (instance types, API actions, acronyms) | content words |
+|---|---|---|
+| sourceable answers | 0.94–1.00 | **0.67–0.98** |
+| answers with no source | 0.17–0.59 | **0.00–0.31** |
+
+Either alone has a blind spot. An answer about *"Redis"* and *"Amazon Elasticache"* named only
+AWS and CloudWatch — both in the source — so the identifier signal scored 1.0, while just
+**21 of its 66** content words came from it. The log now names the signal that failed:
+
+```
+[generation] ungrounded output (only 14% of the answer's content words are in the
+              reference (not from the source: outage, affected, us-east-1, hosts,
+              popular, including)) -- attempt 2
+```
+
+The retry uses a closed-book prompt ("answer from the reference material and nothing else"), so
+a first attempt that wanders gets a second chance to stay within the source.
+
 ### The sampler was cutting the answers in half
 
 The anti-repetition penalties I added to stop the loop were also suppressing the answer's
