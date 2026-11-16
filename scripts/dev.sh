@@ -16,6 +16,27 @@ WIPE=0
 [ "${1:-}" = "--wipe" ] && WIPE=1
 shift || true
 
+echo "== redis =="
+# The container is not started automatically on a host reboot (rootless podman
+# has no systemd user unit here), so bring it up explicitly. The vector index
+# for the semantic tier lives in it.
+if podman ps --format '{{.Names}}' | grep -qx llm-redis; then
+  echo "  already running"
+elif podman ps -a --format '{{.Names}}' | grep -qx llm-redis; then
+  podman start llm-redis >/dev/null && echo "  started"
+else
+  podman run -d --name llm-redis -p 127.0.0.1:6379:6379 \
+    --restart unless-stopped --memory 192m --cpus 1.0 \
+    docker.io/library/redis:8 redis-server --save "" --appendonly no >/dev/null \
+    && echo "  created and started"
+fi
+for _ in $(seq 1 20); do
+  podman exec llm-redis redis-cli ping 2>/dev/null | grep -q PONG && break
+  sleep 0.5
+done
+podman exec llm-redis redis-cli ping 2>/dev/null | grep -q PONG \
+  && echo "  PONG" || { echo "  redis did not come up"; exit 1; }
+
 echo "== stopping whatever owns :8000 =="
 PIDS="$(ss -tlnpH 'sport = :8000' 2>/dev/null | grep -oP 'pid=\K[0-9]+' | sort -u)"
 if [ -n "$PIDS" ]; then

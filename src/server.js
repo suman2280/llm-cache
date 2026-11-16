@@ -341,6 +341,19 @@ export async function build() {
   });
 
   // ---- the demo seeding ------------------------------------------------
+  app.get("/demo/prompts", async () => {
+    // The dashboard's "Run the demo" button asks for its questions here, so
+    // the demo is always in the same domain as the loaded corpus. The page
+    // keeps its own list as a fallback for when this is unreachable.
+    const { DEMO_PROMPTS } = await import("./corpus.js");
+    return {
+      chapter_code: "MATH-01-AWS",
+      prompts: DEMO_PROMPTS.map(({ q, rephrase, concept_id, topic }) => ({
+        q, rephrase, concept_id, topic,
+      })),
+    };
+  });
+
   app.post("/demo/seed", async (req, reply) => {
     if (!adminOk(req) || !config.allowSeed) return reply.code(404).send({ detail: "demo seed disabled" });
     const { seedDemoCorpus } = await import("./corpus.js");

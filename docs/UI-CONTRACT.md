@@ -20,6 +20,7 @@ Run the checker: `node scripts/check_api_contract.mjs http://localhost:8000`
 | `POST` | `/v1/chat/completions` | The one chat route. Body is an OpenAI-compatible completion request. | `app.js:387` |
 | `GET` | `/stats` | The dashboard's entire world. One poll per second by default. | `app.js:126` |
 | `POST` | `/stats/reset` | Zero counters + clear the event feed. Response must be `2xx`. **Not admin-gated** — see below. | `app.js:547` |
+| `GET` | `/demo/prompts` | The questions the *Run the demo* button asks. Optional but recommended — see §7. | `app.js:501` |
 | `GET` | `/healthz` | Linked from the footer; also used by the old benchmark's server probe. | `index.html:126` |
 | `GET` | `/` | API root. Must return an object (the UI never reads it; keep it for humans). | `index.html:124` |
 
@@ -200,12 +201,37 @@ event's `source_prompt` field instead, which is safe because the UI uses `textCo
 
 ## 7. The demo the UI drives
 
-`app.js:467-511` (`nextDemoSteps` → `demoBtn`) sends **three** sequential requests, all with
-`temperature: 0` and no system prompt:
+`app.js` (`loadDemoPool` → `nextDemoSteps` → `demoBtn`) sends **three** sequential
+requests, all with `temperature: 0` and no system prompt:
 
 1. `pick.q` — a fresh question → expected `miss` (runs inference).
 2. `pick.q` — **byte-identical** to step 1, *including* the same params → expected `exact-hit`.
 3. `pick.rephrase` — a rewording → expected `semantic-hit` with a distance and a source prompt.
+
+### Where the questions come from
+
+**SHOULD** serve the pool from `GET /demo/prompts`:
+
+```json
+{ "chapter_code": "MATH-01-AWS",
+  "prompts": [ { "q": "...", "rephrase": "...", "concept_id": "AWS-01", "topic": "..." } ] }
+```
+
+The demo must be in the **same domain as the loaded content**. The first build hard-coded
+generic dev-ops trivia (load balancers, DNS) in the page while the corpus behind it was
+AWS — so the demo showed a general-purpose chat cache rather than the product. Serving the
+pool from the backend means swapping the corpus (AWS → the JEE *Sets* chapter) changes the
+demo with **no dashboard edit**.
+
+The page keeps its own list as a **fallback** for when the backend is unreachable, so the
+demo still works offline.
+
+Two properties the backend must guarantee about the pool it serves:
+
+- **Each `rephrase` must be within the semantic radius of its `q`** (measured: 0.034–0.257
+  against a 0.35 radius), or step 3 will not be a semantic hit.
+- **No two `q`s may be within the radius of each other**, or one demo entry would collide
+  with another.
 
 Frozen behaviours the backend MUST honour:
 

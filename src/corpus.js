@@ -50,6 +50,59 @@ const MISCONCEPTIONS = [
 ];
 
 /**
+ * The questions the dashboard's "Run the demo" button asks.
+ *
+ * These live HERE, next to the corpus, not in the dashboard, for two reasons:
+ *
+ *  1. The demo must be in the same domain as the loaded content. The previous
+ *     build hard-coded generic dev-ops trivia (load balancers, DNS) in the
+ *     page, so the demo showed a general-purpose chat cache while the corpus
+ *     behind it was AWS -- the demo did not look like the product.
+ *
+ *  2. Swapping the corpus (AWS -> the JEE *Sets* chapter) must change the
+ *     demo too, with no dashboard edit. The page asks the backend for the
+ *     pool and falls back to its own list only if the backend is unreachable.
+ *
+ * They are deliberately OPERATIONAL rather than definitional: the learning
+ * objects above answer "what is X", so a demo question that asked that would
+ * already be cached and the first step would be a hit instead of a miss. Each
+ * rephrase must land within the semantic radius of its question, and must not
+ * land near any other entry.
+ */
+export const DEMO_PROMPTS = [
+  {
+    concept_id: "AWS-01", topic: "s3-lifecycle",
+    q: "How do I configure an S3 lifecycle rule to archive old objects to Glacier?",
+    rephrase: "What is the way to set up a lifecycle policy that transitions objects to Glacier?",
+  },
+  {
+    concept_id: "AWS-12", topic: "vpc-firewall",
+    q: "What's the difference between a security group and a network ACL?",
+    rephrase: "How do security groups differ from network ACLs?",
+  },
+  {
+    concept_id: "AWS-01", topic: "s3-versioning",
+    q: "How do I enable versioning on an S3 bucket?",
+    rephrase: "What steps do I take to turn on versioning for an S3 bucket?",
+  },
+  {
+    concept_id: "AWS-13", topic: "iam",
+    q: "What's the difference between an IAM role and an IAM user?",
+    rephrase: "How does an IAM role differ from an IAM user?",
+  },
+  {
+    concept_id: "AWS-03", topic: "lambda-schedule",
+    q: "How do I run a Lambda function on a schedule?",
+    rephrase: "What is the way to trigger a Lambda function on a timer?",
+  },
+  {
+    concept_id: "AWS-04", topic: "ec2-purchase-model",
+    q: "What's the difference between a spot instance and an on-demand instance?",
+    rephrase: "How do spot instances differ from on-demand instances?",
+  },
+];
+
+/**
  * Seed the corpus: 7 learning objects, 3 misconceptions, and N deterministic
  * practice items. Every seeded item is created with the provenance the SOP
  * requires and `review_status: approved` so the tutor path can serve it.

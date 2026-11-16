@@ -155,6 +155,45 @@ node scripts/seed_corpus.mjs      # seed 29 Chapter-1 assets
 
 Then open <http://localhost:8000/dashboard/>.
 
+### What to try
+
+**The demo button.** Click **Run the demo**. It sends three requests: a fresh AWS question
+(**miss**, ~15 s — the model loads and runs), the identical text again (**exact-hit**,
+sub-millisecond), and a rewording (**semantic-hit**, ~10 ms, served from the cached answer
+with the distance and the source prompt). Watch `INFERENCES AVOIDED` climb without the model
+being consulted.
+
+The demo's questions come from the **backend** (`GET /demo/prompts`), not from the page — so
+they are always in the same domain as the loaded corpus. Today that is AWS
+(`MATH-01-AWS`); when the JEE *Sets* corpus lands, the demo asks about sets without any
+dashboard change.
+
+**The template tier** — the fastest path, and it never touches the model:
+
+```bash
+curl -s localhost:8000/content/generate -H 'Content-Type: application/json' -d '{
+  "template_id": "T-EC2-COST",
+  "params": {"instance_type": "m5.large", "count": "4", "hours": "730"}
+}' | python3 -m json.tool | head -12
+```
+
+Change `hours` to `160` and you get a **different** answer ($61.44 vs $280.32) computed in
+under a millisecond — the same template, one number apart. That is the case a
+similarity-only cache gets wrong.
+
+**The preview, with the counts** — in another terminal: `npm run demo`. It ends with
+`requests that never touched the model: N of M`. On a warm cache that number is higher; on a
+cold one, lower. Both are honest.
+
+**The memory** — in a third terminal, while a miss is running:
+
+```bash
+watch -n2 'free -m | head -2; ps -o rss= -C llama-server 2>/dev/null | awk "{printf \"llama-server RSS: %.1f GB\n\", \$1/1048576}"'
+```
+
+The model process appears on a miss and **disappears** 120 s after the last one
+(`LLM_MODEL_IDLE_S=0` unloads immediately). Node alone is ~191 MB.
+
 | Command | What it does |
 |---|---|
 | `npm start` | serve on :8000 (dashboard at `/dashboard/`) |

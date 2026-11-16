@@ -453,18 +453,23 @@ form.addEventListener("submit", async (ev) => {
 // ------------------------------------------------------------ run the demo
 // Three requests make the thesis self-demonstrating: a question (miss),
 // the same text (exact-hit), a rewording (semantic-hit). It sends REAL
-// requests through the real cache — the first runs inference.
+// requests through the real cache - the first runs inference.
 //
 // Two deliberate choices:
 //  - temperature is sent explicitly (0): the composer's default field is
-//    temperature=0, and the exact tier hashes params — omitting it would
+//    temperature=0, and the exact tier hashes params - omitting it would
 //    make "the same text" a *semantic* hit served from itself (d=0.000).
-//    Caught by scripts/ui_smoke.mjs; see docs/validation.md.
+//    Caught by scripts/ui_smoke.mjs.
 //  - the base question rotates through a pool: a warm cache (this question
 //    already answered) would turn step 1 into a hit. Fresh deployments get
 //    the canonical sequence on the first run; later runs report whatever
-//    the cache actually says — the verdict line is always the proxy's truth.
-const DEMO_POOL = [
+//    the cache actually says - the verdict line is always the proxy's truth.
+//
+// The pool comes from the BACKEND (/demo/prompts), so the demo asks about the
+// same domain as the content that is loaded - AWS today, the JEE *Sets*
+// chapter once that corpus lands. The list below is only a fallback for when
+// the backend cannot be reached.
+const FALLBACK_DEMO_POOL = [
   { q: "What is a load balancer?", rephrase: "Can you explain what a load balancer does?" },
   { q: "What is a reverse proxy?", rephrase: "Explain what a reverse proxy does." },
   { q: "What is DNS?", rephrase: "Can you explain what DNS does?" },
@@ -474,10 +479,33 @@ const DEMO_POOL = [
 ];
 const DEMO_RUN_KEY = "llm-cache:demo-run";
 
-function nextDemoSteps() {
+let demoPool = null;
+
+async function loadDemoPool() {
+  if (demoPool) return demoPool;
+  try {
+    const res = await fetch("/demo/prompts", { cache: "no-store" });
+    if (res.ok) {
+      const body = await res.json();
+      if (Array.isArray(body.prompts) && body.prompts.length) {
+        demoPool = body.prompts
+          .filter((p) => p && p.q && p.rephrase)
+          .map((p) => ({ q: p.q, rephrase: p.rephrase }));
+        if (demoPool.length) return demoPool;
+      }
+    }
+  } catch {
+    /* backend unreachable - fall through to the built-in list */
+  }
+  demoPool = FALLBACK_DEMO_POOL;
+  return demoPool;
+}
+
+async function nextDemoSteps() {
+  const pool = await loadDemoPool();
   const n = Number(localStorage.getItem(DEMO_RUN_KEY) || "0");
   localStorage.setItem(DEMO_RUN_KEY, String(n + 1));
-  const pick = DEMO_POOL[n % DEMO_POOL.length];
+  const pick = pool[n % pool.length];
   return [
     { prompt: pick.q, note: `1/3 · new question — miss, running inference (seconds)…` },
     { prompt: pick.q, note: "2/3 · the exact same text — expecting exact-hit…" },
@@ -488,7 +516,7 @@ function nextDemoSteps() {
 demoBtn.addEventListener("click", async () => {
   if (busy) return;
   setBusy(true, "starting demo…");
-  const steps = nextDemoSteps();
+  const steps = await nextDemoSteps();
   for (const step of steps) {
     setStatus(step.note, false);
     try {
