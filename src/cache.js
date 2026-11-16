@@ -35,6 +35,7 @@ import * as model from "./model.js";
 import * as templates from "./templates.js";
 import { DomainPolicy, OPEN_POLICY } from "./domain.js";
 import { coverageVerdict } from "./lexicon.js";
+import { splitIntents } from "./intents.js";
 import { retrieve, groundRequest, PREFILL, assembleAnswer } from "./knowledge.js";
 import { detectDegeneracy } from "./degenerate.js";
 import { referenceTerms, referenceIdentifiers, checkGrounding } from "./grounding.js";
@@ -292,6 +293,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   const ctx = {
     scope, symbolFp, minReviewStatus, body, envelope,
     queryText: prompt || semText,
+    fingerprint,
     // The content path is strict: an ungrounded answer may not become content.
     // The chat path serves it labelled and uncached.
     requireGrounded,
@@ -430,8 +432,53 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
     ctx.exactRejected = verdict.reason;
   }
 
+  // ---- multi-intent: compose from several cached answers --------------
+  const intents = splitIntents(prompt || "");
+  if (intents.length > 1 && config.distanceThreshold > 0) {
+    const resolved = [];
+    for (const intent of intents) {
+      const r = await resolveIntent(intent, ctx).catch(() => null);
+      if (!r) break;
+      resolved.push(r);
+    }
+    if (resolved.length === intents.length) {
+      const answer = composeAnswers(intents, resolved);
+      const latency = performance.now() - started;
+      db().recordEvent({
+        ts: new Date().toISOString(), status: "semantic-hit", model: body.model,
+        latency_ms: round1(latency), similarity: 0, threshold: config.distanceThreshold,
+        prompt: prompt, response: answer,
+        source_prompt: resolved.map((r) => r.prompt).join(" | "),
+        reason: `composed from ${resolved.length} cached answers (one per question)`,
+        tier: "semantic", verified: 1,
+        embed_ms: timings.embed_ms, redis_ms: timings.redis_ms,
+      });
+      db().increment(["requests", "semantic_hits"]);
+      return {
+        status: "semantic-hit", tier: "semantic",
+        response: mintResponse({
+          model: body.model,
+          choices: [{ index: 0, finish_reason: "stop",
+            message: { role: "assistant", content: answer } }],
+        }, { status: "hit" }),
+        headers: {
+          "x-cache-status": "semantic-hit",
+          "x-cache-latency-ms": round1(latency).toFixed(1),
+          "x-cache-similarity": "0.0000",
+          "x-cache-source-prompt": asciiHeaderValue(resolved.map((r) => r.prompt).join(" | ")),
+          "x-cache-policy": `composed-from-${resolved.length}`,
+        },
+        event: { prompt, response: answer,
+          source_prompt: resolved.map((r) => r.prompt).join(" | ") },
+      };
+    }
+    // At least one question was not cached: let the model answer BOTH rather
+    // than serving a partial answer. Skip the single-question semantic path.
+    ctx.multiIntentIncomplete = true;
+  }
+
   // ---- tier 2: semantic ------------------------------------------------
-  if (config.distanceThreshold > 0) {
+  if (config.distanceThreshold > 0 && !ctx.multiIntentIncomplete) {
     try {
       // The KB chunks the question grounds in are needed by the verifier (a
       // shared chunk is what makes two questions "the same question"), so
@@ -710,6 +757,55 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
     },
     event: { prompt, response: answerText(payload), embed_ms: timings.embed_ms, redis_ms: timings.redis_ms },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Multi-intent resolution
+//
+// "tell me about AWS\ntell me about EC2" is two questions. Serving the nearest
+// single answer drops the first one silently -- and it happened to pass the
+// verifier because "aws" is domain-generic and "ec2" was the only specific
+// term left. Each intent is resolved independently here, then the answers are
+// composed.
+
+async function resolveIntent(intent, ctx) {
+  const text = semanticText([{ role: "user", content: intent }]);
+  const chunks = await retrieve(intent, config.groundingTopK).catch(() => []);
+  const chunkIds = chunks.map((c) => c.id);
+  const vec = await embed(text);
+  if (!vec) return null;
+
+  const [byChunk, byRadius] = await Promise.all([
+    vectors.searchByChunks(vec, {
+      chunks: chunkIds, scope: ctx.scope, model: config.model, limit: 5,
+    }),
+    vectors.searchScope(vec, { scope: ctx.scope, model: config.model, limit: 3 }),
+  ]);
+  const seen = new Set();
+  for (const cand of [...byChunk, ...byRadius]) {
+    if (seen.has(cand.fingerprint)) continue;
+    seen.add(cand.fingerprint);
+    if (cand.fingerprint === ctx.fingerprint) continue;
+    const row = db().getByFingerprint(cand.fingerprint);
+    if (!row) continue;
+    let answer = "";
+    try { answer = answerText(JSON.parse(row.response_json)) ?? ""; } catch { continue; }
+    if (!answer) continue;
+    const candChunks = String(row.chunk_ids || "").split(",").filter(Boolean);
+    const verdict = coverageVerdict(intent, row.prompt, answer,
+      chunkIds.some((id) => candChunks.includes(id)));
+    if (verdict.ok) {
+      db().touchHit(row.id);
+      return { answer, prompt: row.prompt, distance: Number(cand.dist) };
+    }
+  }
+  return null;
+}
+
+function composeAnswers(intents, resolved) {
+  const sections = resolved.map((r, i) =>
+    `**${intents[i]}**\n\n${r.answer.replace(/^Key points:\s*/i, "")}`);
+  return `Here are answers to your questions.\n\n${sections.join("\n\n")}`;
 }
 
 // ---------------------------------------------------------------------------

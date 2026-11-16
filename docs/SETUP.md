@@ -1,5 +1,12 @@
 # Setup guide
 
+> **Baseline:** commit `f84f2d7`, tagged **`v0.2-baseline`** on `origin`, is the reference build
+> — the three cache tiers, the domain guard, RAG grounding, the repetition and grounding checks,
+> KB-chunk equivalence, the Clear-cache button, and the collaborator setup guide. It passes
+> 91 unit tests / 44 contract checks / 13 browser checks. **Every feature from here on is added
+> on top of that tag.** When something regresses, `git diff v0.2-baseline` is the first thing to
+> look at.
+
 This is the guide for a new collaborator. It assumes a Linux machine with no GPU and roughly
 16 GB of RAM — the reference environment. Nothing here needs an API key or a cloud account.
 

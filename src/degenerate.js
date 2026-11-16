@@ -63,14 +63,12 @@ export function detectDegeneracy(text) {
     }
   }
 
-  // 3. a truncated final line -- the loop ran into the token limit
-  const trimmed = body.trimEnd();
-  if (trimmed.length > 80 && !/[.!?:;)\]}">`]$/.test(trimmed)) {
-    return {
-      degenerate: true, metric: 1,
-      reason: `the answer ends mid-sentence: "...${trimmed.slice(-60)}"`,
-    };
-  }
+  // NOTE: there used to be a third rule here that flagged any answer whose
+  // final character was not punctuation. That was wrong: a bullet list
+  // commonly ends without a full stop, and it rejected perfectly good
+  // answers ("...reaches the internet only through a NAT gateway"). A
+  // truncated answer is imperfect but it is not a loop; the two checks above
+  // are the ones that actually detect the failure they exist for.
 
   return { degenerate: false, reason: null, metric: 0 };
 }

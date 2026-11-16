@@ -71,10 +71,13 @@ test("a repeated n-gram is detected even when the lines differ slightly", () => 
   assert.ok(d.degenerate, "a repeated n-gram must be detected");
 });
 
-test("an answer truncated mid-sentence is detected", () => {
-  const d = detectDegeneracy("A".repeat(300));
-  assert.ok(d.degenerate);
-  assert.match(d.reason, /mid-sentence/);
+test("an answer that simply ends without a full stop is NOT degenerate", () => {
+  // a bullet list's last line often has no trailing period; that is not a loop
+  const text = `Key points:
+- An instance lives in exactly one Availability Zone.
+- An instance without a public address reaches the internet only through a NAT gateway`;
+  const d = detectDegeneracy(text);
+  assert.ok(!d.degenerate, `must not be flagged: ${d.reason}`);
 });
 
 test("a well-formed long answer that ends in a full stop is not flagged", () => {

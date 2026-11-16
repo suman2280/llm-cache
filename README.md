@@ -448,6 +448,9 @@ in ~3 s; the embedder takes 9 ms per 384-d vector.
 
 ## Running it
 
+> **Baseline:** `v0.2-baseline` (commit `f84f2d7`) is the reference build — 91 tests,
+> 44 contract checks, 13 browser checks. Everything from here on is additive on top of it.
+>
 > **New here?** Follow the [collaborator setup guide](docs/SETUP.md) — prerequisites,
 > a verified step-by-step install, how a request flows, where to make changes, and
 > troubleshooting. The essentials are below.

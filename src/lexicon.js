@@ -100,8 +100,16 @@ export function stemmedTerms(text) {
  * @param {number} threshold     minimum coverage of the query's specific terms
  */
 export function coverageVerdict(query, candPrompt, candAnswer, chunkOverlap, threshold = 0.75) {
-  const q = stemmedTerms(query);
-  const c = new Set([...stemmedTerms(candPrompt), ...stemmedTerms(candAnswer)]);
+  // A question made entirely of generic words ("tell me about AWS", "what is
+  // EC2?") has no specific terms: the framing verbs are stopwords and the
+  // domain name itself is generic. Fall back to content words so such a
+  // question is still cacheable instead of scoring 0 and being rejected.
+  const useGeneric = stemmedTerms(query).size === 0;
+  const termFn = useGeneric
+    ? (text) => new Set([...contentTerms(text)].map(stem))
+    : stemmedTerms;
+  const q = termFn(query);
+  const c = new Set([...termFn(candPrompt), ...termFn(candAnswer)]);
   const matched = [...q].filter((t) => c.has(t));
   const unmatched = [...q].filter((t) => !c.has(t));
   const coverage = q.size ? matched.length / q.size : 0;
