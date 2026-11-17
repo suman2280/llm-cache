@@ -7,6 +7,7 @@
  * concept_id / asset_type / template and get a governed answer back.
  */
 
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join, normalize } from "node:path";
 import Fastify from "fastify";
@@ -19,6 +20,9 @@ import * as model from "./model.js";
 import * as templates from "./templates.js";
 import { encodeEnvelope, asciiHeaderValue, parseEnvelope, scopeOf } from "./keying.js";
 import { isLoaded as embedderLoaded } from "./embedder.js";
+import { retrieve } from "./knowledge.js";
+
+function hash(v) { return createHash("sha256").update(v, "utf8").digest("hex").slice(0, 12); }
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -75,9 +79,23 @@ export async function build() {
     return LOOPBACK.has(bare) || LOOPBACK.has(String(host));
   };
 
+  /**
+   * The principal acting on this request, derived from the presented token.
+   * Never from a body field: that is how #43's "two approvers" became one
+   * caller with two strings.
+   */
+  const principal = (req) => {
+    const t = String(req.headers["x-admin-token"] || "");
+    if (config.adminToken && t === config.adminToken) return `operator:${hash(t)}`;
+    if (config.reviewerToken && t === config.reviewerToken) return `reviewer:${hash(t)}`;
+    if (isLoopbackHost(config.host)) return "operator:loopback";
+    return "anonymous";
+  };
   const adminOk = (req) => {
     if (!config.adminToken) return true;
-    if (req.headers["x-admin-token"] === config.adminToken) return true;
+    const t = String(req.headers["x-admin-token"] || "");
+    if (config.adminToken && t === config.adminToken) return true;
+    if (config.reviewerToken && t === config.reviewerToken) return true;
     // The dashboard cannot embed the admin token in the page, so same-origin
     // headers are accepted ONLY for a loopback-bound PoC. On a non-loopback
     // bind these are forgeable by any HTTP client, so they are ignored and
@@ -109,7 +127,30 @@ export async function build() {
     } catch (err) {
       const status = err.statusCode ?? 500;
       if (!err.public) console.error("[chat] unexpected error:", err.stack || err.message);
+      // #54: guard rejections (422 domain, 429 rate-limit, 400 invalid body)
+      // must be visible on /stats and must carry cache headers.
+      const policy = status === 422 ? "out-of-domain"
+        : status === 429 ? "rate-limited"
+        : (err.public ? "invalid-request" : "internal-error");
+      const cacheStatus = status === 429 ? "bypass" : "error";
+      reply.headers({
+        "X-Cache-Status": cacheStatus,
+        "X-Cache-Latency-Ms": "0.0",
+        "X-Cache-Policy": policy,
+        "X-Served-By": "llm-cache",
+      });
       reply.code(status);
+      try {
+        const body = req.body ?? {};
+        const prompt = (Array.isArray(body.messages)
+          ? body.messages.map((m) => m?.content).join(" ") : "").slice(0, 200);
+        db().recordEvent({
+          ts: new Date().toISOString(),
+          status: cacheStatus, model: body?.model ?? config.model,
+          latency_ms: 0, prompt, reason: policy, tier: "guard",
+        });
+        db().increment(["requests", cacheStatus === "bypass" ? "bypasses" : "errors"]);
+      } catch { /* never let observability fail the response */ }
       // The UI reads `payload.detail` (a string) to build its error line.
       return { detail: err.public ? err.message : "internal error" };
     }
@@ -286,12 +327,14 @@ export async function build() {
         envelopeHeader: encodeEnvelope(full), role, maxTokens: 400,
         requireGrounded: true, trusted, clientId,
       });
+      const seededChunks = await retrieve(rendered.prompt, 3).catch(() => []);
       db().insertEntry({
+        chunk_ids: seededChunks.map((c) => c.id).join(","),
         // Tier 0 entries must have a REAL key: the column is UNIQUE and the
         // exact tier looks up requestFingerprint(), so an empty string made
         // the second generation fail and the first unreachable.
         fingerprint: templates.templateKey(tpl.id, params),
-        scope: scopeOf(full, 'det'), model: config.model,
+        scope: scopeOf(full, 'det', config.tenantId), model: config.model,
         semantic_text: rendered.prompt, prompt: rendered.prompt,
         response_json: JSON.stringify(out.response),
         symbol_fp: "", envelope_json: JSON.stringify(full),
@@ -382,7 +425,11 @@ export async function build() {
     }
     const row = db().getById(id);
     if (!row) return reply.code(404).send({ detail: `no record ${id}` });
-    const actor = String(req.body?.approver || req.headers["x-admin-token"] || "operator");
+    // #43: the approver is the authenticated principal, never a body field.
+    // The body may only carry a rationale; it may not assert who is acting.
+    // #51: the approver is the authenticated PRINCIPAL, never a body field,
+    // and the token itself is never persisted -- only its hashed principal.
+    const actor = principal(req);
     const rationale = String(req.body?.rationale || "");
     // #38: production release needs a second, DISTINCT approver.
     if (status === "production" && row.review_status !== "production") {
@@ -482,7 +529,7 @@ export async function build() {
       const { embed } = await import("./embedder.js");
       const { symbolFingerprint, scopeOf } = await import("./keying.js");
       const vec = await embed(String(b.prompt));
-      const scope = scopeOf(parseEnvelope(String(req.headers["x-content-envelope"] || "")), "det");
+      const scope = scopeOf(parseEnvelope(String(req.headers["x-content-envelope"] || "")), "det", config.tenantId);
       const cands = vec ? await vectors.searchScope(vec, { scope, limit: 8 }) : [];
       return {
         near_duplicates: cands.map((c) => ({

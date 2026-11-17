@@ -17,7 +17,7 @@ const ADMIN = process.env.ADMIN_TOKEN || "";
 // draft entries by the review floor.
 const SAME_ORIGIN = { "Sec-Fetch-Site": "same-origin" };
 
-const STATUSES = ["miss", "exact-hit", "semantic-hit", "bypass", "error"];
+const STATUSES = ["miss", "exact-hit", "semantic-hit", "deterministic-hit", "bypass", "error"];
 // A prompt whose every character is outside latin-1 — the old backend 500'd on it.
 // A non-ASCII prompt, so the ASCII-safe-header contract (UI-CONTRACT 6) is
 // exercised end to end. The non-ASCII character is U+2011 (non-breaking
@@ -109,7 +109,7 @@ async function main() {
   });
   check("POST /stats/reset → 2xx", reset.ok, `status=${reset.status}`);
 
-  async function send(prompt, temperature = 0) {
+  async function send(prompt, temperature = 0, extra = {}) {
     const res = await fetch(`${BASE}/v1/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...SAME_ORIGIN },
@@ -117,6 +117,7 @@ async function main() {
         model: (stats.body?.service?.model) || "llama3.2:3b",
         messages: [{ role: "user", content: prompt }],
         temperature,
+        ...extra,
       }),
     });
     return {
@@ -129,8 +130,9 @@ async function main() {
 
   console.log("");
   const miss = await send(NON_ASCII);
-  check("non-ASCII prompt does NOT 500 (UI-CONTRACT §6)", miss.status < 500,
-    miss.status >= 500 ? `status=${miss.status} body=${JSON.stringify(miss.body)?.slice(0, 160)}` : "ok");
+  check("non-ASCII prompt returns a 2xx (UI-CONTRACT §6)",
+    miss.status >= 200 && miss.status < 300,
+    `status=${miss.status} body=${JSON.stringify(miss.body)?.slice(0, 160)}`);
 
   const hdr = (r, name) => r.headers.get(name);
   for (const name of ["x-cache-status", "x-cache-latency-ms"]) {
@@ -150,6 +152,29 @@ async function main() {
     hdr(again, "x-cache-distance") !== null && hdr(again, "x-cache-similarity-score") !== null,
     `distance=${hdr(again, "x-cache-distance")} score=${hdr(again, "x-cache-similarity-score")}`,
   );
+  check(
+    "x-cache-distance equals x-cache-similarity (UI-CONTRACT §8)",
+    hdr(again, "x-cache-distance") === hdr(again, "x-cache-similarity"),
+    `distance=${hdr(again, "x-cache-distance")} similarity=${hdr(again, "x-cache-similarity")}`,
+  );
+  check(
+    "x-cache-distance equals x-cache-similarity (UI-CONTRACT §8)",
+    hdr(again, "x-cache-distance") === hdr(again, "x-cache-similarity"),
+    `distance=${hdr(again, "x-cache-distance")} similarity=${hdr(again, "x-cache-similarity")}`,
+  );
+  // Vary each answer-affecting parameter and assert it does NOT exact-hit.
+  for (const extra of [
+    { top_k: 1 }, { seed: 99 }, { num_predict: 10 },
+    { repeat_penalty: 1.2 }, { max_tokens: 10 },
+  ]) {
+    const r = await send(NON_ASCII, 0, extra);
+    check(
+      `exact tier respects ${Object.keys(extra)[0]}`,
+      r.headers.get("x-cache-status") !== "exact-hit",
+      `got ${r.headers.get("x-cache-status")}`,
+    );
+  }
+
   check(
     "identical request (same params) → exact-hit, not semantic-at-0 (UI-CONTRACT §7)",
     st === "exact-hit",
@@ -203,6 +228,9 @@ async function main() {
     bad.status >= 400 && typeof badBody?.detail === "string",
     `status=${bad.status} detail=${JSON.stringify(badBody?.detail)?.slice(0, 120)}`,
   );
+  for (const name of ["x-cache-status", "x-cache-latency-ms", "x-cache-policy", "x-served-by"]) {
+    check(`error response carries ${name}`, bad.headers.get(name) !== null, `got ${bad.headers.get(name)}`);
+  }
 
   // ---- 7. ids survive reset -------------------------------------------
   const afterReset = await jget("/stats");
@@ -229,8 +257,8 @@ async function main() {
       `status=${ood.status} detail=${JSON.stringify(ood.body?.detail)?.slice(0, 90)}`);
   } else if (mode === "bypass") {
     check("out-of-domain question is labelled, not cached",
-      ood.h.get("x-cache-policy") === "out-of-domain",
-      `policy=${ood.h.get("x-cache-policy")}`);
+      ood.headers.get("x-cache-policy") === "out-of-domain",
+      `policy=${ood.headers.get("x-cache-policy")}`);
   } else {
     console.log(`SKIP  out-of-domain question (domain mode is "${mode}")`);
   }

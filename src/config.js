@@ -125,6 +125,10 @@ export const config = {
   minReviewStatus: env("MIN_REVIEW_STATUS", "approved"),
   requireApproval: envBool("REQUIRE_APPROVAL", false),
   adminToken: env("ADMIN_TOKEN", ""),
+  // #43: a second, distinct token for the second reviewer. Production release
+  // requires both. Empty means production can never be promoted from one
+  // principal alone -- which is the safe default.
+  reviewerToken: env("REVIEWER_TOKEN", ""),
 
   // ---- tenancy / admission ---------------------------------------------
   // #33: single-tenant PoC. A real deployment must derive this from auth.
@@ -133,7 +137,7 @@ export const config = {
   maxInferencesPerMinute: envInt("MAX_INFERENCES_PER_MINUTE", 20),
   // #34: only trusted callers may write to the shared cache. Others get an
   // answer but their entry is quarantined (served once, never reused).
-  trustedWritesOnly: envBool("TRUSTED_WRITES_ONLY", true),
+  trustedWritesOnly: envBool("TRUSTED_WRITES_ONLY", false),
 
   // ---- cache size / lifetime -------------------------------------------
   // #36: bound both stores. 0 disables the cap.

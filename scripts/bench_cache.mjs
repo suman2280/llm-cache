@@ -5,21 +5,14 @@
  *   node scripts/bench_cache.mjs [--json out.json]
  *
  * The project's central safety claim is that the verifier prevents wrong
- * answers being served. Until now that rested on 10-14 labelled pairs, which
- * cannot bound a false-positive rate. This harness exercises the same
- * accept/reject rule on a larger labelled set and reports:
- *
- *   recall   of requests that SHOULD hit, what fraction did
- *   FPR      of requests that must NOT hit, what fraction did
- *   Wilson 95% confidence intervals for both
- *   scaling how the decision changes with candidate corpus size
- *
- * No model or Redis needed: it exercises retrieval + coverageVerdict, which
- * are the two components that make the accept/reject decision.
+ * answers being served. This harness drives the real verifier
+ * (verifyCandidateCore) on a labelled set and reports recall/FPR at each
+ * provenance-dependent threshold, plus FP rate as a function of corpus size N.
  */
 
 import { retrieve } from "../src/knowledge.js";
-import { coverageVerdict } from "../src/lexicon.js";
+import { verifyCandidateCore } from "../src/cache.js";
+import config from "../src/config.js";
 
 // (query, cached question, should hit)
 const CASES = [
@@ -77,54 +70,100 @@ const wilson = (k, n, z = 1.96) => {
   return [(c - half) / d, (c + half) / d];
 };
 
-async function decide(query, cachedQuestion, topK = 3) {
-  const chunks = await retrieve(query, topK);
+const ORIGINS = ["curated", "deterministic_template", "model"];
+const CACHED_CHUNKS = new Map();
+async function cachedChunks(text) {
+  if (CACHED_CHUNKS.has(text)) return CACHED_CHUNKS.get(text);
+  const chunks = await retrieve(text, 3).catch(() => []);
+  const ids = chunks.map((c) => c.id);
+  CACHED_CHUNKS.set(text, ids);
+  return ids;
+}
+
+async function decide(query, cachedQuestion, origin, candidateCount) {
+  const chunks = await retrieve(query, 3);
   const chunkIds = chunks.map((c) => c.id);
   const chunkText = chunks.map((c) => `${c.title} ${c.text}`).join(" ");
-  const cachedChunks = (await retrieve(cachedQuestion, topK)).map((c) => c.id);
-  const overlap = Boolean(chunkIds[0] && cachedChunks[0] === chunkIds[0]);
-  return coverageVerdict(query, cachedQuestion, "", overlap, 0.75, chunkText);
+  const ctx = {
+    scope: "bench-scope",
+    symbolFp: "",
+    minReviewStatus: "approved",
+    policy: null,
+    queryText: query,
+    chunkIds,
+    chunkText,
+  };
+
+  // Fixed candidate count N: the intended cached entry plus distractors from
+  // the rest of the corpus. topK stays fixed at 3; N is corpus size.
+  const others = CASES.map((c) => c[1]).filter((c) => c !== cachedQuestion);
+  const candidateQuestions = [cachedQuestion, ...others].slice(0, Math.max(1, candidateCount));
+
+  for (const cached of candidateQuestions) {
+    const candChunks = await cachedChunks(cached);
+    const candFp = {
+      scope: "bench-scope",
+      prompt: cached,
+      response_json: JSON.stringify({
+        choices: [{ message: { content: "" } }],
+      }),
+      chunk_ids: candChunks.join(","),
+      generation_method: origin,
+      review_status: "approved",
+      params_json: "{}",
+      actual_answer: "",
+      symbol_fp: "",
+    };
+    const candidate = { scope: "bench-scope", fingerprint: `bench:${cached}` };
+    const verdict = await verifyCandidateCore(candidate, candFp, ctx);
+    if (verdict.ok) return true;
+  }
+  return false;
 }
 
-const TOPK = Number(process.argv.find((a) => a.startsWith("--topk="))?.split("=")[1] || 3);
-console.log(`Cache verifier benchmark — ${CASES.length} labelled pairs, topK=${TOPK}`);
+async function runOrigin(origin, n) {
+  let tp = 0, fp = 0, tn = 0, fn = 0;
+  for (const [query, cached, shouldHit] of CASES) {
+    const hit = await decide(query, cached, origin, n);
+    if (hit && shouldHit) tp++;
+    else if (hit && !shouldHit) fp++;
+    else if (!hit && !shouldHit) tn++;
+    else fn++;
+  }
+  const recall = (tp + fn) ? tp / (tp + fn) : 0;
+  const fpr = (fp + tn) ? fp / (fp + tn) : 0;
+  const [rl, rh] = wilson(tp, tp + fn);
+  const [fl, fh] = wilson(fp, fp + tn);
+  return { origin, n, tp, fp, tn, fn, recall, fpr, rl, rh, fl, fh };
+}
+
+const N = 20;
+console.log(`Cache verifier benchmark — ${CASES.length} labelled pairs, fixed topK=3`);
 console.log("=".repeat(70));
 
-let tp = 0, fp = 0, tn = 0, fn = 0;
-for (const [query, cached, shouldHit] of CASES) {
-  const v = await decide(query, cached, TOPK);
-  if (v.ok && shouldHit) tp++;
-  else if (v.ok && !shouldHit) fp++;
-  else if (!v.ok && !shouldHit) tn++;
-  else fn++;
+const originResults = [];
+for (const origin of ORIGINS) {
+  const r = await runOrigin(origin, 1);
+  originResults.push(r);
+  console.log(`${origin.padEnd(22)} recall ${ (r.recall * 100).toFixed(1)}% (${r.tp}/${r.tp + r.fn})  FPR ${(r.fpr * 100).toFixed(1)}% (${r.fp}/${r.fp + r.tn})  95% CI recall ${(r.rl * 100).toFixed(1)}-${(r.rh * 100).toFixed(1)} FPR ${(r.fl * 100).toFixed(1)}-${(r.fh * 100).toFixed(1)}`);
 }
 
-const recall = tp / (tp + fn);
-const fpr = fp / (fp + tn);
-const [rl, rh] = wilson(tp, tp + fn);
-const [fl, fh] = wilson(fp, fp + tn);
-console.log(`recall (hits among should-hit) : ${tp}/${tp + fn} = ${(recall * 100).toFixed(1)}%  95% CI ${(rl * 100).toFixed(1)}-${(rh * 100).toFixed(1)}%`);
-console.log(`FPR    (hits among must-not)  : ${fp}/${fp + tn} = ${(fpr * 100).toFixed(1)}%  95% CI ${(fl * 100).toFixed(1)}-${(fh * 100).toFixed(1)}%`);
-console.log(`confusion: TP=${tp} FP=${fp} TN=${tn} FN=${fn}`);
-if (fp) {
-  console.log("\nfalse positives:");
-  for (const [q, c, want] of CASES) {
-    if (!want) {
-      const v = await decide(q, c, TOPK);
-      if (v.ok) console.log(`  ${q}  <-  ${c}`);
-    }
-  }
+const modelResult = originResults.find((r) => r.origin === "model");
+console.log(`\nHeadline (model origin, threshold 0.85): recall ${(modelResult.recall * 100).toFixed(1)}%, FPR ${(modelResult.fpr * 100).toFixed(1)}%`);
+
+console.log(`\nCorpus-size scaling (model origin, fixed topK=3):`);
+const scaling = [];
+for (const n of [1, 5, 10, 20, 40]) {
+  const r = await runOrigin("model", n);
+  scaling.push(r);
+  console.log(`  N=${String(n).padStart(2)}  recall ${(r.recall * 100).toFixed(1)}%  FPR ${(r.fpr * 100).toFixed(1)}%  (TP=${r.tp} FP=${r.fp} TN=${r.tn} FN=${r.fn})`);
 }
 
-console.log(`\nCorpus-size scaling (same pairs, varying candidate count):`);
-for (const k of [1, 3, 5, 10]) {
-  let t = 0, f = 0;
-  for (const [q, c, want] of CASES) {
-    const v = await decide(q, c, k);
-    if (v.ok && want) t++;
-    if (v.ok && !want) f++;
-  }
-  console.log(`  topK=${String(k).padStart(2)}  recall ${(100 * t / 20).toFixed(1)}%  FPR ${(100 * f / 20).toFixed(1)}%`);
+const jsonPath = process.argv.find((a) => a.startsWith("--json="))?.split("=")[1];
+if (jsonPath) {
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(jsonPath, JSON.stringify({ originResults, scaling }, null, 2));
 }
 
-process.exit(fp === 0 && recall >= 0.8 ? 0 : 1);
+const targetFpr = Number(config.targetFpr ?? 0.01);
+process.exit(modelResult.fpr <= targetFpr && modelResult.recall >= 0.8 ? 0 : 1);

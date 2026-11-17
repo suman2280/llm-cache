@@ -20,7 +20,7 @@ If anything fails, jump to [Troubleshooting](#troubleshooting).
 |---|---|---|
 | Linux, 12+ CPU cores, **12–16 GB RAM** | A 7B model at Q4 uses ~4.6 GB. Less than ~10 GB will be painful. | `free -h` |
 | **~12 GB free disk** | ~4.4 GB of GGUF weights, ~2 GB of llama.cpp build output, ~1 GB of Python deps | `df -h` |
-| **Node ≥ 20.6** | The app uses `node --env-file`. Tested on Node 26. | `node -v` |
+| **Node ≥ 22.5** | The app uses `node --env-file`. Tested on Node 26. | `node -v` |
 | **uv** | Builds the one-off Python venv used to convert the LoRA adapter | `uv --version` |
 | **Podman** | Runs Redis 8. Docker is deliberately not used. | `podman --version` |
 | **git, gcc, g++, make, cmake, curl** | llama.cpp is built from source | `which git gcc g++ make cmake curl` |
@@ -210,7 +210,7 @@ shape, update that document and the contract checker together.
 | a semantic tier looks "dead" (all misses) | check the app log for `[cache] semantic tier degraded` | fix the underlying error; the catch deliberately fails open |
 
 The **contract checker is the fastest way to tell whether your changes broke the dashboard**:
-if it prints `40/40 contract checks pass`, the UI still works against the backend.
+if it prints `N/N contract checks pass`, the UI still works against the backend (the count varies with server state).
 
 ---
 

@@ -164,6 +164,8 @@ export async function seedDemoCorpus(db, { practiceCount = 24 } = {}) {
   // The grounding chunks are part of the cache entry: they are what makes two
   // questions "the same question" (see src/cache.js). Resolve them per entry.
   const { retrieve } = await import("./knowledge.js");
+  const { cacheIdentityOf } = await import("./keying.js");
+  const { config: cfg } = await import("./config.js");
   const chunkIdsFor = async (prompt) => {
     try {
       const chunks = await retrieve(prompt, 3);
@@ -174,25 +176,25 @@ export async function seedDemoCorpus(db, { practiceCount = 24 } = {}) {
   };
 
   for (const lo of LEARNING_OBJECTS) {
+    const question = `What is ${lo.title}?`;
     const body = {
       model: config.model,
-      messages: [
-        { role: "system", content: "You are an AWS enterprise assistant." },
-        { role: "user", content: `Define ${lo.title}.` },
-      ],
+      messages: [{ role: "user", content: question }],
+      temperature: 0,
     };
     const envelope = {
       chapter_code: CHAPTER, concept_id: lo.concept_id, asset_type: "learning_object",
       source_section: lo.source_section, difficulty_level: "2", skill_type: "recall",
       review_status: "approved", generation_method: "curated", object_type: lo.object_type,
     };
-    const fp = requestFingerprint(body);
+    const { scope, fingerprint: fp } = cacheIdentityOf({
+      body, envelope, tenantId: cfg.tenantId,
+    });
     const text = semanticText(body.messages);
-    const question = `What is ${lo.title}?`;
     const answer = `${lo.title}: ${lo.content}`;
     db.insertEntry({
       fingerprint: fp,
-      scope: scopeOf(envelope, 'sample'),
+      scope: scope,
       model: config.model,
       semantic_text: text,
       prompt: question,
@@ -217,9 +219,18 @@ export async function seedDemoCorpus(db, { practiceCount = 24 } = {}) {
       source_section: "3.3", difficulty_level: "2", skill_type: "diagnose",
       review_status: "approved", generation_method: "curated",
     };
+    const mcBody = {
+      model: config.model,
+      messages: [{ role: "user", content: mc.diagnostic }],
+      temperature: 0,
+    };
+    const mcEnvelope = envelope;
+    const { scope: mcScope, fingerprint: mcFp } = cacheIdentityOf({
+      body: mcBody, envelope: mcEnvelope, tenantId: cfg.tenantId,
+    });
     db.insertEntry({
-      fingerprint: `mc-${mc.concept_id}-${seeded}`,
-      scope: scopeOf(envelope, 'sample'),
+      fingerprint: mcFp,
+      scope: mcScope,
       model: config.model,
       semantic_text: mc.diagnostic,
       prompt: mc.diagnostic,
@@ -282,9 +293,17 @@ export async function seedDemoCorpus(db, { practiceCount = 24 } = {}) {
         template_id: tpl.id, params, review_status: "approved",
         generation_method: "deterministic_template",
       };
+      const practiceBody = {
+        model: config.model,
+        messages: [{ role: "user", content: rendered.prompt }],
+        temperature: 0,
+      };
+      const { scope: practiceScope, fingerprint: practiceFp } = cacheIdentityOf({
+        body: practiceBody, envelope, tenantId: cfg.tenantId,
+      });
       db.insertEntry({
-        fingerprint: templates.templateKey(tpl.id, params),
-        scope: scopeOf(envelope, 'det'),
+        fingerprint: practiceFp,
+        scope: practiceScope,
         model: config.model,
         semantic_text: rendered.prompt,
         prompt: rendered.prompt,

@@ -381,7 +381,7 @@ How do I price an EC2 spot instance?
                                  REJECTED  "covers 2/4 specific terms (missing: price, spot)"
 ```
 
-Calibrated on 14 labelled pairs: **14/14**.
+Calibrated on the 40 labelled pairs in `scripts/bench_cache.mjs`: 18/20 recall, 0/20 FPR.
 
 ### The lexical guard: why a distance is not a correctness criterion
 
@@ -410,7 +410,7 @@ How does an IAM role differ from an IAM user?
                          -> semantic-hit   (shares iam, role, user)
 ```
 
-Calibrated on 10 labelled pairs (5 must-hit, 5 must-miss): **10/10**.
+Calibrated on the 40 labelled pairs in `scripts/bench_cache.mjs` (20 must-hit, 20 must-miss): 18/20 recall, 0/20 FPR.
 
 ### The verifier is the point
 
@@ -442,7 +442,7 @@ serves everything else at Node speed with no model resident at all.
 | Model resident (7B Q4_K_M, ctx 2048) | **~4.7 GB RSS**, of which ~4.6 GB is file-backed and reclaimable (~115 MB KV cache) |
 | Redis (Podman, capped 192 MB) | ~25 MB |
 
-`LLM_MODEL_IDLE_S` controls it: `0` unloads after every request, `120` (default) after two
+`MODEL_IDLE_S` controls it: `0` unloads after every request, `120` (default) after two
 idle minutes, `-1` never.
 
 The single biggest memory win was a build flag. With llama.cpp's default
@@ -550,7 +550,7 @@ watch -n2 'free -m | head -2; ps -o rss= -C llama-server 2>/dev/null | awk "{pri
 ```
 
 The model process appears on a miss and **disappears** 120 s after the last one
-(`LLM_MODEL_IDLE_S=0` unloads immediately). Node alone is ~191 MB.
+(`MODEL_IDLE_S=0` unloads immediately). Node alone is ~191 MB.
 
 | Command | What it does |
 |---|---|
@@ -559,9 +559,9 @@ The model process appears on a miss and **disappears** 120 s after the last one
 | `npm run seed` | seed the demonstration corpus |
 | `npm run contract` | assert the backend satisfies the frozen UI's contract |
 | `npm run bench:model` | measure the inference layer (throughput, latency, memory, refusal) |
-| `npm test` | 106 tests: the dashboard's reconciliation planner + the backend's keying and templates |
+| `npm test` | 114 tests: domain guard, grounding, lexicon, intents, degenerate answers, knowledge, keying, templates, and audit regressions |
 | `npm run check:dashboard` | every id `app.js` reaches for exists in `index.html` |
-| `node scripts/ui_smoke.mjs` | drive the dashboard in a real Chrome (11 checks) |
+| `node scripts/ui_smoke.mjs` | drive the dashboard in a real Chrome (13 checks) |
 | `node scripts/screenshot.mjs` | capture the dashboard for the docs |
 
 ### The acceptance gates
@@ -570,7 +570,7 @@ The dashboard is frozen, so the backend is checked against it mechanically:
 
 ```bash
 node scripts/check_api_contract.mjs http://localhost:8000
-# 40/40 contract checks pass.
+# contract checks pass (count is dynamic; see the checker output)
 # The frozen dashboard will work against this backend unchanged.
 ```
 

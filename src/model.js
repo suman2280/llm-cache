@@ -11,9 +11,9 @@
  *                    the kernel can reclaim under pressure
  *
  * Config:
- *   LLM_MODEL_IDLE_S = 120  kill after 2 idle minutes (default)
- *   LLM_MODEL_IDLE_S = 0    kill immediately after each request (max saving)
- *   LLM_MODEL_IDLE_S = -1   never kill (min latency)
+ *   MODEL_IDLE_S = 120  kill after 2 idle minutes (default)
+ *   MODEL_IDLE_S = 0    kill immediately after each request (max saving)
+ *   MODEL_IDLE_S = -1   never kill (min latency)
  */
 
 import { spawn } from "node:child_process";
@@ -131,18 +131,25 @@ export async function ensureModel() {
     if (state === "running") { lastUsedAt = Date.now(); return config.upstreamUrl; }
     throw startupError ?? new Error("model did not start");
   }
-  // An already-running external server needs no spawn.
-  if (await healthy()) {
-    state = "running";
-    lastUsedAt = Date.now();
-    return config.upstreamUrl;
-  }
 
-  state = "starting"; // set BEFORE the first await -- no double spawn
+  // #49: the guard is installed SYNCHRONOUSLY before any await. Previously
+  // `await healthy()` ran before the guard, so two concurrent callers could
+  // both observe "stopped" and both spawn a ~4.6 GB process.
+  state = "starting";   // synchronous, no await yet
   startupError = null;
-  startingPromise = startModel();
+  const promise = (async () => {
+    // An already-running external server needs no spawn.
+    if (await healthy()) {
+      state = "running";
+      lastUsedAt = Date.now();
+      return config.upstreamUrl;
+    }
+    const url = await startModel();
+    return url;
+  })();
+  startingPromise = promise;
   try {
-    const url = await startingPromise;
+    const url = await promise;
     return url;
   } catch (err) {
     startupError = err;
@@ -165,7 +172,12 @@ export async function infer(body, { maxTokens, prefill } = {}) {
   const base = await ensureModel();
   const t0 = performance.now();
   const payload = { ...body };
-  if (maxTokens && payload.max_tokens === undefined) payload.max_tokens = maxTokens;
+  // #41: clamp ALWAYS. The old fallback only applied when the caller omitted
+  // max_tokens, so a body value of 100000 still reached the model and could
+  // occupy the single inference slot for the full timeout.
+  const ceiling = config.maxAnswerTokens * 2;
+  const requested = Number(payload.max_tokens ?? maxTokens ?? 0);
+  if (requested > 0) payload.max_tokens = Math.min(requested, ceiling);
 
   // Anti-repetition sampling. The caller may set any of these; the defaults
   // only fill in what the caller left out.

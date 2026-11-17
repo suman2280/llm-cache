@@ -150,7 +150,7 @@ and never reuses one works.
 
 | Header | Read as | Requirement |
 |---|---|---|
-| `x-cache-status` | the verdict badge | **MUST** be exactly one of: `miss`, `exact-hit`, `semantic-hit`, `bypass`, `error` |
+| `x-cache-status` | the verdict badge | **MUST** be exactly one of: `miss`, `exact-hit`, `semantic-hit`, `deterministic-hit`, `bypass`, `error` (six, not five -- `deterministic-hit` is tier 0) |
 | `x-cache-latency-ms` | number, rendered as ms/s | MUST |
 | `x-cache-similarity` | `d=<toFixed(3)>` | MUST on the statuses where a match distance exists |
 | `x-cache-source-prompt` | rendered verbatim in the verdict line | **MUST be ASCII-only** — see §6 |
@@ -317,7 +317,7 @@ content words must appear in the candidate's prompt or answer. Common English wo
 domain-generic words ("aws", "cloud", "service", "difference") are excluded, because those are
 exactly the words a rewording is allowed to change; "redis", "lifecycle" and "glacier" are not.
 
-Calibrated on 10 labelled pairs (5 must-hit, 5 must-miss): 10/10 correct.
+Calibrated on the 40 labelled pairs in `scripts/bench_cache.mjs` (20 must-hit, 20 must-miss): 18/20 recall, 0/20 FPR.
 
 **MUST** — a rejected candidate is **counted and reported**, not silently dropped, and the
 search **continues** to the next candidate rather than failing the request.

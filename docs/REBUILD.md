@@ -137,20 +137,17 @@ scale, a gateway with many upstream providers, auth UI, billing.
 
 ---
 
-## 4. Open decisions — these block the build
+## 4. Open decisions — resolved
 
-> **Status: all four are now resolved.** They were answered while building, and the
-> answers are recorded here because the reasoning still matters.
->
-> | Decision | Resolution |
-> |---|---|
-> | **DEC-1 stack** | **Node/TypeScript + `node:sqlite` + Redis (Podman) + ONNX MiniLM.** One toolchain, and it removes ~2.5 GB of torch from the runtime. `node:sqlite` (SQLite 3.54 built into Node 26) also removes the native-build dependency that `better-sqlite3` needed. |
-> | **DEC-2 product identity** | **The acceleration layer for the SOP's 7-step pipeline**, with the generic `/v1/chat/completions` proxy kept as the layer underneath it. The `/content/*` surface carries the envelope, review status and provenance. |
-> | **DEC-3 model / inference** | **`Qwen2.5-7B-Instruct` + the `aws-enterprise-assistant` QLoRA adapter**, served by llama.cpp with the adapter applied at runtime (`--lora-scaled`) so no FP16 merge is needed on a 14 GB box. Deterministic-first, model-fallback — the template tier answers what it can in code. |
-> | **DEC-4 benchmark negatives** | **Still open.** Needs the SOP's Chapter-1 asset files to build hard negatives (SET-07 vs SET-08). The current corpus is AWS-shaped, so the negatives are template-parameter near-misses rather than concept near-misses. |
+All four were answered while building; the reasoning still matters, so it is
+recorded here.
 
-Fill these in and the rebuild can start the same day. My recommendation is listed first in each;
-the alternatives are what I would want argued back.
+| Decision | Resolution |
+|---|---|
+| **DEC-1 stack** | **Node + `node:sqlite` + Redis (Podman) + ONNX MiniLM.** One toolchain, and it removes ~2.5 GB of torch from the runtime. `node:sqlite` (SQLite 3.54 built into Node 26) also removes the native-build dependency that `better-sqlite3` needed. |
+| **DEC-2 product identity** | **The acceleration layer for the SOP's 7-step pipeline**, with the generic `/v1/chat/completions` proxy kept as the layer underneath it. The `/content/*` surface carries the envelope, review status and provenance. |
+| **DEC-3 model / inference** | **`Qwen2.5-7B-Instruct` + the `aws-enterprise-assistant` QLoRA adapter**, served by llama.cpp with the adapter applied at runtime (`--lora-scaled`) so no FP16 merge is needed on a 14 GB box. Deterministic-first, model-fallback — the template tier answers what it can in code. |
+| **DEC-4 benchmark negatives** | **Open.** Needs the SOP's Chapter-1 asset files to build hard negatives (SET-07 vs SET-08). The current corpus is AWS-shaped, so the negatives are template-parameter near-misses rather than concept near-misses. `scripts/bench_cache.mjs` is the harness; it has 40 pairs and 0% FPR, but that is not the SOP's own hard-negative set. |
 
 ### DEC-1 — Stack
 

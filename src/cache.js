@@ -45,6 +45,7 @@ import { DOMAIN } from "./corpus.js";
 import {
   requestFingerprint, scopeOf, semanticText, lastUserText,
   symbolFingerprint, asciiHeaderValue, parseEnvelope, encodeEnvelope, samplingClass,
+  cacheIdentityOf,
 } from "./keying.js";
 
 /**
@@ -160,11 +161,13 @@ const reviewRank = (s) => {
  */
 const inFlight = new Map();
 
-/** #32: clamp caller-supplied max_tokens to a bounded range. */
+/** #32/#41: clamp caller-supplied max_tokens to a bounded range. A missing
+ *  value keeps the configured default; a too-large value is capped. */
 function boundedTokens(value) {
   const ceiling = config.maxAnswerTokens * 2;
-  const requested = Number(value) || 0;
-  return Math.min(Math.max(requested, config.maxAnswerTokens), ceiling);
+  const requested = Number(value);
+  if (!Number.isFinite(requested) || requested <= 0) return value;
+  return Math.min(requested, ceiling);
 }
 
 /**
@@ -180,6 +183,28 @@ const THRESHOLD_BY_ORIGIN = {
   model: 0.85,
 };
 const coverageThreshold = (origin) => THRESHOLD_BY_ORIGIN[origin] ?? 0.80;
+
+/** #44: age check shared by exact and semantic hit paths. */
+function isExpired(row) {
+  if (!config.cacheTtlS || config.cacheTtlS <= 0) return false;
+  return Date.now() - Number(row.created_at) > config.cacheTtlS * 1000;
+}
+
+/**
+ * Store-backed verifier: fetches the row, enforces TTL side effects, then
+ * delegates every accept/reject decision to verifyCandidateCore.
+ */
+async function verifyCandidate(candidate, ctx) {
+  const candFp = await db().getByFingerprint(candidate.fingerprint);
+  // #44: TTL must be checked on EVERY read, not only on misses -- a hot
+  // entry would otherwise never expire.
+  if (candFp && isExpired(candFp)) {
+    db().deleteEntry(candFp.id);
+    vectors.deleteDocument(`e${candFp.id}`).catch(() => {});
+    return { ok: false, reason: "the cached answer has expired" };
+  }
+  return verifyCandidateCore(candidate, candFp, ctx);
+}
 
 /** The contract's three distance headers. One source of truth so they cannot drift. */
 function distanceHeaders(distance = 0) {
@@ -220,13 +245,23 @@ function mintResponse(payload, { status }) {
 /**
  * @returns {{ok: true} | {ok: false, reason: string}}
  */
-async function verifyCandidate(candidate, ctx) {
+/**
+ * The pure, store-free core of the verifier. Everything that can be decided
+ * without a database lives here so the benchmark can exercise it directly
+ * (issue #40) instead of measuring retrieval + coverageVerdict and calling
+ * it the real accept/reject decision.
+ */
+export async function verifyCandidateCore(candidate, candFp, ctx) {
   // 1. scope -- the Redis query already enforced it; assert rather than trust.
-  if (candidate.scope && candidate.scope !== ctx.scope) {
+  if (candidate?.scope && candidate.scope !== ctx.scope) {
     return { ok: false, reason: `scope mismatch (${candidate.scope} != ${ctx.scope})` };
   }
 
-  const candFp = await db().getByFingerprint(candidate.fingerprint);
+  // #44: TTL must be checked on EVERY read. The store-backed wrapper also
+  // deletes the row; this pure check keeps the benchmark honest.
+  if (candFp && isExpired(candFp)) {
+    return { ok: false, reason: "the cached answer has expired" };
+  }
   const cachedFp = candFp?.symbol_fp ?? "";
   if (cachedFp && ctx.symbolFp && cachedFp !== ctx.symbolFp) {
     return { ok: false, reason: "symbol fingerprint differs (different operators/numbers)" };
@@ -358,13 +393,18 @@ function deterministicTier(envelope) {
 export async function handleChat(body, { envelopeHeader = "", role = "author", maxTokens,
   requireGrounded = false, trusted = false, clientId = "local" } = {}) {
   const started = performance.now();
+  // #41: normalize answer-affecting params before keying and inference, so a
+  // huge max_tokens cannot bypass the ceiling by being hashed verbatim.
+  if (body && typeof body === "object" && body.max_tokens !== undefined) {
+    body.max_tokens = boundedTokens(body.max_tokens);
+  }
   const envelope = parseEnvelope(envelopeHeader);
-  const sClass = samplingClass(body);
-  const scope = scopeOf(envelope, sClass, config.tenantId);
   const semText = semanticText(body?.messages);
   const prompt = lastUserText(body?.messages);
   const symbolFp = symbolFingerprint(semText);
-  const fingerprint = requestFingerprint(body, scope);
+  const { scope, fingerprint } = cacheIdentityOf({
+    body, envelope, tenantId: config.tenantId,
+  });
   const minReviewStatus = role === "author" ? "draft" : (config.minReviewStatus || null);
   // Declare BEFORE ctx: ctx captures `policy`, and a later declaration is a
   // temporal dead zone error that the route catch turns into a silent 500.
@@ -926,7 +966,13 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
 async function resolveIntent(intent, ctx) {
   const text = semanticText([{ role: "user", content: intent }]);
   const chunks = await retrieve(intent, config.groundingTopK).catch(() => []);
+  // temporarily swap the chunk context so the verifier checks THIS intent
+  const savedChunkIds = ctx.chunkIds;
+  const savedChunkText = ctx.chunkText;
+  ctx.chunkIds = chunks.map((c) => c.id);
+  ctx.chunkText = chunks.map((c) => `${c.title} ${c.text}`).join(" ");
   const chunkIds = chunks.map((c) => c.id);
+  try {
   const vec = await embed(text);
   if (!vec) return null;
 
@@ -946,16 +992,18 @@ async function resolveIntent(intent, ctx) {
     let answer = "";
     try { answer = answerText(JSON.parse(row.response_json)) ?? ""; } catch { continue; }
     if (!answer) continue;
-    const candChunks = String(row.chunk_ids || "").split(",").filter(Boolean);
-    const verdict = coverageVerdict(intent, row.prompt, answer,
-      Boolean(chunkIds[0] && candChunks[0] === chunkIds[0]), 0.75,
-      chunks.map((c) => `${c.title} ${c.text}`).join(" "));
+    const verdict = await verifyCandidate(cand, ctx);
+    if (!verdict.ok) db().increment(["rejected_hits"]);
     if (verdict.ok) {
       db().touchHit(row.id);
       return { answer, prompt: row.prompt, distance: Number(cand.dist) };
     }
   }
   return null;
+  } finally {
+    ctx.chunkIds = savedChunkIds;
+    ctx.chunkText = savedChunkText;
+  }
 }
 
 function composeAnswers(intents, resolved) {
@@ -1008,7 +1056,7 @@ export function statsPayload() {
         // provenance-dependent thresholds; the measured FPR comes from
         // `node scripts/bench_cache.mjs`, not from this process
         coverage_thresholds: THRESHOLD_BY_ORIGIN,
-        measured_fpr: null,
+        measured_fpr: { curated: null, deterministic_template: null, model: null },
       },
       store_breaker: storeBreaker.describe(),
       cache_entries: db().countEntries(),

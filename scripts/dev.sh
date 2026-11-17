@@ -59,5 +59,5 @@ fi
 
 echo "== starting =="
 # node 20.6+ reads .env natively: no dotenv dependency
-ENVARGS=(ALLOW_SEED=1 ADMIN_TOKEN="${ADMIN_TOKEN:-dev-token}")
+ENVARGS=(ALLOW_SEED=1 ADMIN_TOKEN="${ADMIN_TOKEN:-dev-token}" REVIEWER_TOKEN="${REVIEWER_TOKEN:-}")
 exec env "${ENVARGS[@]}" node --env-file=.env src/main.js 2>&1

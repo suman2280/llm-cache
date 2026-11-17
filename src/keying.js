@@ -208,6 +208,18 @@ export function samplingClass(body) {
   return `${base}:${sha256(canonical(params)).slice(0, 12)}`;
 }
 
+/**
+ * One shared identity for a cache entry, so cache.js and corpus.js cannot drift
+ * (issue #46). Scope and fingerprint must be computed the same way on both
+ * sides or seeded entries are invisible to live requests.
+ */
+export function cacheIdentityOf({ body, envelope = {}, tenantId = "local" } = {}) {
+  const sClass = samplingClass(body);
+  const scope = scopeOf(envelope || {}, sClass, tenantId || "local");
+  const fingerprint = requestFingerprint(body, scope);
+  return { samplingClass: sClass, scope, fingerprint };
+}
+
 export function difficultyBand(v) {
   const n = Number.parseInt(v, 10);
   if (Number.isNaN(n)) return "_";

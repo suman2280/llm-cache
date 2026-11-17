@@ -281,6 +281,7 @@
     background: color-mix(in oklab, currentColor 12%, transparent);
   }
   .badge-miss        { color: var(--warn); }
+  .badge-deterministic-hit { color: var(--good); font-weight: 700; }
   .badge-exact-hit   { color: var(--good); }
   .badge-semantic-hit{ color: var(--accent); }
   .badge-bypass      { color: var(--text-muted); }

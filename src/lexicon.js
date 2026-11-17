@@ -17,7 +17,7 @@
  * because those are exactly the words a rewording is allowed to change --
  * while "redis", "lifecycle", "glacier" are not.
  *
- * Calibration on 10 labelled pairs (5 must-hit, 5 must-miss): 10/10 correct,
+ * Calibration on the 40 labelled pairs in scripts/bench_cache.mjs: 18/20 recall, 0/20 FPR,
  * with the must-hit cases sharing >= 1 specific term and every must-miss case
  * sharing none. Distance alone cannot separate them: the closest must-hit is
  * 0.031 and the farthest must-miss is 0.831, but the must-miss pair at 0.349

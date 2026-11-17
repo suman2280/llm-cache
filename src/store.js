@@ -141,6 +141,8 @@ export class Store {
    * too -- the two stores must stay in sync.
    */
   evictToLimit(limit) {
+    // #45: 0 means "no cap", not "keep nothing".
+    if (!limit || limit <= 0) return [];
     const count = this.countEntries();
     if (count <= limit) return [];
     const rows = this.db.prepare(
@@ -190,8 +192,16 @@ export class Store {
         actual_answer   = excluded.actual_answer,
         generation_method = excluded.generation_method,
         verification_method = excluded.verification_method,
-        review_status   = excluded.review_status,
+        -- #50: never downgrade an approved/production record to draft on
+        -- regeneration. Adding a review_status field is deliberate work.
+        review_status   = CASE
+          WHEN excluded.review_status IN ('draft', 'needs_academic_review')
+               AND review_status IN ('approved', 'production')
+          THEN review_status ELSE excluded.review_status END,
         source_prompt   = excluded.source_prompt,
+        -- #48: a regenerated answer is NEW; refreshing created_at keeps it
+        -- from being TTL-evicted immediately. hits is preserved.
+        created_at      = excluded.created_at,
         last_used_at    = excluded.last_used_at
     `).run(entry);
     return r.lastInsertRowid;

@@ -76,6 +76,7 @@ function fmtOverhead(ev) {
 
 function badgeClass(status) {
   return {
+    "deterministic-hit": "badge-deterministic-hit",
     "exact-hit": "badge-exact-hit",
     "semantic-hit": "badge-semantic-hit",
     miss: "badge-miss",
