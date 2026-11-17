@@ -44,6 +44,20 @@ import { embed } from "./embedder.js";
 
 export const MODES = ["off", "bypass", "strict"];
 
+/** Escape a literal for use inside a RegExp. */
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Whole-term match. "iam" must not match "diamonds"; "rds" must not match
+ * "words". A boundary is a non-alphanumeric character (or a string edge),
+ * which also matches "s3" inside "s3://bucket".
+ */
+export function containsTerm(haystack, term) {
+  const core = String(term).replace(/[^a-z0-9]+$/i, "");
+  if (!core) return false;
+  return new RegExp(`(^|[^a-z0-9])${escapeRe(core)}(?=$|[^a-z0-9])`, "i").test(haystack);
+}
+
 export class DomainPolicy {
   /**
    * @param {object} spec
@@ -91,15 +105,29 @@ export class DomainPolicy {
       };
     }
 
-    // The lexical signal is free and decisive when it fires.
-    const matched = this.terms.filter((t) => lower.includes(t));
-    const outMatched = this.outTerms.filter((t) => lower.includes(t));
+    // The lexical signal is free and decisive when it fires. Whole terms
+    // only: a plain `includes` made "diamonds" count as IAM and "words" as
+    // RDS. Trailing punctuation on a term ("s3://") is stripped before the
+    // boundary check so "s3://bucket" still matches "s3".
+    const matched = this.terms.filter((t) => containsTerm(lower, t));
+    const outMatched = this.outTerms.filter((t) => containsTerm(lower, t));
     const lexical = this.terms.length ? matched.length / Math.min(this.terms.length, 3) : 0;
 
     if (outMatched.length) {
       return {
         inDomain: false, semantic: 0, lexical: 0, matched, outMatched,
         reason: `contains out-of-domain term(s): ${outMatched.join(", ")}`,
+      };
+    }
+
+    // A lexical hit is decisive: do NOT embed. The domain classifier runs on
+    // every request, and embedding here loaded the ~250 MB ONNX runtime on
+    // the first request and added ~9ms to every hit -- which broke the
+    // sub-millisecond exact/deterministic claims.
+    if (matched.length) {
+      return {
+        inDomain: true, semantic: null, lexical, matched, outMatched: [],
+        reason: `domain vocabulary: ${matched.slice(0, 4).join(", ")}`,
       };
     }
 

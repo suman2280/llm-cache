@@ -46,6 +46,39 @@ import {
 } from "./keying.js";
 
 /**
+ * Rebuild the Redis vector index from SQLite after a restart.
+ *
+ * SQLite rows survive a restart; the vector index does not (Redis runs with
+ * --save "" --appendonly no). Purging vectors on shutdown used to leave a
+ * cache that exact-hit but could never semantically hit until everything was
+ * regenerated. This runs once, lazily, on the first semantic lookup.
+ */
+let vectorsChecked = false;
+async function ensureVectorsPopulated() {
+  if (vectorsChecked) return;
+  vectorsChecked = true;
+  const indexed = await vectors.vectorCount().catch(() => 0);
+  const rows = db().countEntries();
+  if (indexed >= rows) return;
+  console.log(`[cache] rebuilding ${rows} vector entries from SQLite (index had ${indexed})`);
+  let built = 0;
+  for (const row of db().listEntries({ limit: 10_000 })) {
+    const vec = await embed(row.semantic_text || row.prompt).catch(() => null);
+    if (!vec) continue;
+    await vectors.indexDocument(`e${row.id}`, {
+      scope: row.scope, model: row.model, fingerprint: row.fingerprint,
+      generation_method: row.generation_method, review_status: row.review_status,
+      prompt: row.prompt, chunks: row.chunk_ids,
+    }, vec).catch(() => {});
+    built += 1;
+  }
+  console.log(`[cache] rebuilt ${built} vector entries`);
+}
+
+/** Mark the vector index dirty after an external SQLite write. */
+export function invalidateVectorCache() { vectorsChecked = false; }
+
+/**
  * The domain policy, built from the corpus's DOMAIN descriptor.
  *
  * Mode is configurable because "refuse everything out of domain" is a product
@@ -118,6 +151,30 @@ const reviewRank = (s) => {
   return i === -1 ? 0 : i;
 };
 
+/**
+ * #21 single-flight: N concurrent identical misses produce ONE inference.
+ * Keyed by the exact fingerprint, which already covers every answer-changing
+ * parameter. Waiters join the same promise and get a copy of its payload.
+ */
+const inFlight = new Map();
+
+/** #32: clamp caller-supplied max_tokens to a bounded range. */
+function boundedTokens(value) {
+  const ceiling = config.maxAnswerTokens * 2;
+  const requested = Number(value) || 0;
+  return Math.min(Math.max(requested, config.maxAnswerTokens), ceiling);
+}
+
+/** The contract's three distance headers. One source of truth so they cannot drift. */
+function distanceHeaders(distance = 0) {
+  const d = Number(distance) || 0;
+  return {
+    "x-cache-similarity": d.toFixed(4),
+    "x-cache-distance": d.toFixed(4),
+    "x-cache-similarity-score": (1 - d).toFixed(4),
+  };
+}
+
 function answerText(payload) {
   try {
     const c = payload?.choices?.[0]?.message?.content;
@@ -184,7 +241,8 @@ async function verifyCandidate(candidate, ctx) {
   // the same chunk. A query that grounds in NO chunk (a topic the knowledge
   // base does not cover) falls back to coverage alone.
   const sameMaterial = ctx.chunkIds?.length ? chunkOverlap : true;
-  const verdict = coverageVerdict(ctx.queryText, candFp?.prompt ?? "", answer, sameMaterial);
+  const verdict = coverageVerdict(ctx.queryText, candFp?.prompt ?? "", answer,
+    sameMaterial, 0.75, ctx.chunkText || "");
   if (!verdict.ok) {
     return { ok: false, reason: `not the same question: ${verdict.reason}` };
   }
@@ -286,6 +344,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   // miss. Declared up front: the tier blocks below read them.
   let groundedBody = body;
   let groundingUsed = 0;
+  let retrievalFailed = false;
   let refTerms = new Set();
   let refIds = new Set();
   let chunks = [];
@@ -340,7 +399,9 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   const policy = await getPolicy();
   let domain = null;
   if (policy.mode !== "off") {
-    domain = await policy.classify(semText);
+    // Guard the USER'S QUESTION, not the whole conversation. A system prompt
+    // ("You are an AWS assistant") made every question look in-domain.
+    domain = await policy.classify(prompt || semText);
     if (!domain.inDomain) {
       if (policy.mode === "strict") {
         const latency = performance.now() - started;
@@ -379,7 +440,9 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
       reason: `template ${det.templateId} answered by code, no model call`,
       tier: "deterministic", verified: 1,
     });
-    db().increment(["requests", "exact_hits", "model_invocations"]);
+    // Tier 0 is computed in CODE -- no model was invoked. Counting it here
+    // understated the project's own "inferences avoided" metric.
+    db().increment(["requests", "exact_hits"]);
     return {
       status: "deterministic-hit", tier: "deterministic",
       response: mintResponse(det.response, { status: "miss" }),
@@ -387,7 +450,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
         "x-cache-status": "deterministic-hit",
         "x-cache-latency-ms": round1(latency).toFixed(1),
         "x-cache-policy": `deterministic:${det.templateId}`,
-        "x-cache-similarity": "",
+        ...distanceHeaders(0),
         "x-content-concept-id": det.conceptId,
         "x-content-generation-method": det.generationMethod,
         "x-content-verification-method": det.verificationMethod,
@@ -421,7 +484,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
         headers: {
           "x-cache-status": "exact-hit",
           "x-cache-latency-ms": round1(latency).toFixed(1),
-          "x-cache-similarity": "0.0000",
+          ...distanceHeaders(0),
           "x-cache-source-prompt": asciiHeaderValue(existing.prompt),
           "x-cache-policy": "exact",
         },
@@ -464,7 +527,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
         headers: {
           "x-cache-status": "semantic-hit",
           "x-cache-latency-ms": round1(latency).toFixed(1),
-          "x-cache-similarity": "0.0000",
+          ...distanceHeaders(0),
           "x-cache-source-prompt": asciiHeaderValue(resolved.map((r) => r.prompt).join(" | ")),
           "x-cache-policy": `composed-from-${resolved.length}`,
         },
@@ -489,12 +552,14 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
         if (chunks.length) refIds = referenceIdentifiers(chunks);
       }
       ctx.chunkIds = chunks.map((c) => c.id);
+      ctx.chunkText = chunks.map((c) => `${c.title} ${c.text}`).join(" ");
 
       let vec = null;
       const t0 = performance.now();
       vec = await embed(semText);
       timings.embed_ms = round1(performance.now() - t0);
       if (vec) {
+        await ensureVectorsPopulated();
         const t1 = performance.now();
         // Two candidate sets:
         //  - entries grounded in the SAME knowledge-base chunk (the precise
@@ -539,7 +604,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
               headers: {
                 "x-cache-status": "semantic-hit",
                 "x-cache-latency-ms": round1(latency).toFixed(1),
-                "x-cache-similarity": dist.toFixed(4),
+                ...distanceHeaders(dist),
                 "x-cache-source-prompt": asciiHeaderValue(row.prompt),
                 "x-embed-ms": String(timings.embed_ms),
                 "x-redis-ms": String(timings.redis_ms),
@@ -585,7 +650,10 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
       refIds = referenceIdentifiers(chunks);
     }
   } catch (err) {
-    console.warn(`[knowledge] retrieval failed, answering ungrounded: ${err.message}`);
+    // #18: retrieval failure must NOT silently skip the grounding check and
+    // let a fabricated answer into the cache.
+    retrievalFailed = true;
+    console.warn(`[knowledge] retrieval failed: ${err.message}; answers will not be cached`);
   }
 
   const t2 = performance.now();
@@ -614,10 +682,23 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
         }
         : groundedBody;
 
-      payload = await model.infer(reqBody, {
-        maxTokens: Math.max(maxTokens ?? 0, config.maxAnswerTokens),
-        prefill: config.answerPrefill ? PREFILL : null,
-      });
+      // Join an in-flight generation for the same request instead of running
+      // a second inference. This dedups the burst that --parallel 1 would
+      // otherwise queue for minutes.
+      const existing = inFlight.get(fingerprint);
+      let generated;
+      if (existing) {
+        generated = await existing;
+      } else {
+        const job = (async () => model.infer(reqBody, {
+          maxTokens: boundedTokens(maxTokens),
+          prefill: config.answerPrefill ? PREFILL : null,
+        }))();
+        inFlight.set(fingerprint, job);
+        try { generated = await job; }
+        finally { inFlight.delete(fingerprint); }
+      }
+      payload = generated ? JSON.parse(JSON.stringify(generated)) : generated;
       if (config.answerPrefill) {
         const text = assembleAnswer(PREFILL, payload?.choices?.[0]?.message?.content);
         payload = {
@@ -628,7 +709,12 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
 
       const answer = answerText(payload) ?? "";
       const verdict = detectDegeneracy(answer);
-      if (!verdict.degenerate && refTerms.size) {
+      if (retrievalFailed) {
+        failure = {
+          kind: "ungrounded",
+          reason: "reference material unavailable; the answer could not be checked against a source",
+        };
+      } else if (!verdict.degenerate && refTerms.size) {
         // The answer must be grounded in the reference material it was given.
         // Asking a small model for more makes it fabricate -- "aws" with six
         // to nine bullets produced a "t2.micro" free-tier instance type that
@@ -793,7 +879,8 @@ async function resolveIntent(intent, ctx) {
     if (!answer) continue;
     const candChunks = String(row.chunk_ids || "").split(",").filter(Boolean);
     const verdict = coverageVerdict(intent, row.prompt, answer,
-      chunkIds.some((id) => candChunks.includes(id)));
+      chunkIds.some((id) => candChunks.includes(id)), 0.75,
+      chunks.map((c) => `${c.title} ${c.text}`).join(" "));
     if (verdict.ok) {
       db().touchHit(row.id);
       return { answer, prompt: row.prompt, distance: Number(cand.dist) };

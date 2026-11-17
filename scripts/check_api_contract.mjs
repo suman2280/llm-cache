@@ -11,6 +11,11 @@
 
 const BASE = (process.argv[2] || "http://localhost:8000").replace(/\/$/, "");
 const ADMIN = process.env.ADMIN_TOKEN || "";
+// The checker verifies that the DASHBOARD still works. The dashboard is a
+// same-origin browser, so every request is sent with the same-origin signal;
+// otherwise it acts as an untrusted consumer and is (correctly) blocked from
+// draft entries by the review floor.
+const SAME_ORIGIN = { "Sec-Fetch-Site": "same-origin" };
 
 const STATUSES = ["miss", "exact-hit", "semantic-hit", "bypass", "error"];
 // A prompt whose every character is outside latin-1 — the old backend 500'd on it.
@@ -100,14 +105,14 @@ async function main() {
   // reset first so the sequence is unambiguous
   const reset = await fetch(`${BASE}/stats/reset`, {
     method: "POST",
-    headers: ADMIN ? { "X-Admin-Token": ADMIN } : {},
+    headers: { ...SAME_ORIGIN, ...(ADMIN ? { "X-Admin-Token": ADMIN } : {}) },
   });
   check("POST /stats/reset → 2xx", reset.ok, `status=${reset.status}`);
 
   async function send(prompt, temperature = 0) {
     const res = await fetch(`${BASE}/v1/chat/completions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...SAME_ORIGIN },
       body: JSON.stringify({
         model: (stats.body?.service?.model) || "llama3.2:3b",
         messages: [{ role: "user", content: prompt }],
@@ -135,6 +140,11 @@ async function main() {
     "x-cache-status is one of the five contract values",
     STATUSES.includes(hdr(miss, "x-cache-status")),
     `got ${JSON.stringify(hdr(miss, "x-cache-status"))}`,
+  );
+  check(
+    "a served hit emits x-cache-distance and x-cache-similarity-score (UI-CONTRACT §8)",
+    hdr(miss, "x-cache-distance") !== null && hdr(miss, "x-cache-similarity-score") !== null,
+    `distance=${hdr(miss, "x-cache-distance")} score=${hdr(miss, "x-cache-similarity-score")}`,
   );
 
   // ---- 4. exact tier keys on EVERYTHING -------------------------------

@@ -36,6 +36,11 @@ async function main() {
   console.log(`[app] sqlite     ${config.dbPath}`);
   console.log(`[app] model is NOT loaded and the embedder is NOT loaded -- both are lazy`);
   if (!isUp()) console.warn(`[app] redis is not up at ${config.redisUrl}; the semantic tier will degrade`);
+
+  // #28: without this the embedder's unload timer was dead code and the ONNX
+  // runtime (~250 MB) stayed resident once the semantic tier had used it.
+  const { startIdleTimer } = await import("./embedder.js");
+  startIdleTimer();
 }
 
 main().catch((err) => {

@@ -14,6 +14,7 @@ import config from "./config.js";
 import { getStore as db } from "./store.js";
 import * as vectors from "./vectors.js";
 import * as cache from "./cache.js";
+import { invalidateVectorCache } from "./cache.js";
 import * as model from "./model.js";
 import * as templates from "./templates.js";
 import { encodeEnvelope, asciiHeaderValue, parseEnvelope, scopeOf } from "./keying.js";
@@ -68,23 +69,34 @@ export async function build() {
    * reach the port can forge the header -- so ADMIN_TOKEN should still be set
    * for anything but a localhost PoC.
    */
+  const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
+  const isLoopbackHost = (host = "") => {
+    const bare = String(host).split(":")[0].replace(/^\[|\]$/g, "");
+    return LOOPBACK.has(bare) || LOOPBACK.has(String(host));
+  };
+
   const adminOk = (req) => {
     if (!config.adminToken) return true;
     if (req.headers["x-admin-token"] === config.adminToken) return true;
-    const site = req.headers["sec-fetch-site"];
-    if (site === "same-origin") return true;
+    // The dashboard cannot embed the admin token in the page, so same-origin
+    // headers are accepted ONLY for a loopback-bound PoC. On a non-loopback
+    // bind these are forgeable by any HTTP client, so they are ignored and
+    // the token is the sole authority.
+    if (!isLoopbackHost(config.host)) return false;
+    if (req.headers["sec-fetch-site"] === "same-origin") return true;
     const host = req.headers.host;
+    if (!isLoopbackHost(host)) return false;
     const origin = req.headers.origin;
-    if (origin && host && origin === `http://${host}`) return true;
+    if (origin && origin === `http://${host}`) return true;
     const referer = req.headers.referer;
-    if (referer && host && referer.startsWith(`http://${host}`)) return true;
+    if (referer && referer.startsWith(`http://${host}`)) return true;
     return false;
   };
 
   // ---- OpenAI-compatible chat ----------------------------------------
   app.post("/v1/chat/completions", async (req, reply) => {
     const envelopeHeader = String(req.headers["x-content-envelope"] || "");
-    const role = String(req.headers["x-content-role"] || "author");
+    const role = adminOk(req) ? "author" : "consumer";
     try {
       const out = await cache.handleChat(req.body, {
         envelopeHeader, role, maxTokens: req.body?.max_tokens,
@@ -170,7 +182,7 @@ export async function build() {
   app.post("/content/generate", async (req, reply) => {
     const b = req.body ?? {};
     const envelope = parseEnvelope(String(req.headers["x-content-envelope"] || ""));
-    const role = String(req.headers["x-content-role"] || "author");
+    const role = adminOk(req) ? "author" : "consumer";
 
     // Same rules as a chat request, but the prompt is built from the envelope
     // so the demo is deterministic and inspectable.
@@ -199,12 +211,26 @@ export async function build() {
         ],
         temperature: 0, max_tokens: 400,
       };
+      // #25: content must be in-domain BEFORE any direct insert. Seeding and
+      // generation used to bypass the guard entirely.
+      const policy = await cache.getPolicy();
+      if (policy.mode !== "off") {
+        const verdict = await policy.classify(rendered.prompt);
+        if (!verdict.inDomain) {
+          return reply.code(422).send({
+            detail: `out of domain '${policy.name}': ${verdict.reason}`,
+          });
+        }
+      }
       const out = await cache.handleChat(body, {
         envelopeHeader: encodeEnvelope(full), role, maxTokens: 400,
         requireGrounded: true,
       });
       db().insertEntry({
-        fingerprint: req.headers["x-content-envelope"] ? "" : "",
+        // Tier 0 entries must have a REAL key: the column is UNIQUE and the
+        // exact tier looks up requestFingerprint(), so an empty string made
+        // the second generation fail and the first unreachable.
+        fingerprint: templates.templateKey(tpl.id, params),
         scope: scopeOf(full, 'det'), model: config.model,
         semantic_text: rendered.prompt, prompt: rendered.prompt,
         response_json: JSON.stringify(out.response),
@@ -246,7 +272,12 @@ export async function build() {
       temperature: Number(b.temperature ?? 0.3),
       max_tokens: Number(b.max_tokens ?? 250),
     };
-    const out = await cache.handleChat(body, { envelopeHeader: encodeEnvelope(full), role, maxTokens: body.max_tokens });
+    // #12: content generation is strict in BOTH branches. An ungrounded
+    // answer is an error here, never a 200 with "needs_verification".
+    const out = await cache.handleChat(body, {
+      envelopeHeader: encodeEnvelope(full), role, maxTokens: body.max_tokens,
+      requireGrounded: true,
+    });
     return {
       asset_type: full.asset_type, concept_id: full.concept_id, chapter_code: full.chapter_code,
       prompt: full.source_section, generation_method: "model",
@@ -291,32 +322,42 @@ export async function build() {
     }
     const row = db().getById(id);
     if (!row) return reply.code(404).send({ detail: `no record ${id}` });
+    // Keep the row. Deleting it on approval destroyed the review decision:
+    // the next request regenerated the entry as a draft and had to be
+    // reviewed again, so an approved answer could never be served as approved.
     const changes = db().setReviewStatus(id, status);
-    const invalidated = status === "approved" || status === "production";
-    let removed = 0;
-    if (invalidated) {
-      removed = db().deleteEntry(id);
-      await vectors.deleteDocument(`e${id}`).catch(() => {});
-    }
+    const promoted = status === "approved" || status === "production";
     db().recordEvent({
       ts: new Date().toISOString(), status: "review", model: row.model,
       latency_ms: 0, prompt: row.prompt,
-      reason: `review_status -> ${status}${invalidated ? ` (cache entry ${id} invalidated and will be re-verified on next use)` : ""}`,
+      reason: `review_status -> ${status}${promoted ? " (entry now servable to non-author callers)" : ""}`,
       tier: "review",
     });
     db().increment(["requests"]);
-    return { id, status, updated: changes, cache_invalidated: removed };
+    return { id, status, updated: changes, retained: true };
   });
 
   app.delete("/cache/scope/:scope", async (req, reply) => {
     if (!adminOk(req)) return reply.code(404).send({ detail: "not found" });
+    // #29: delete the vector documents too. Orphans occupy the fixed
+    // candidate limit and cause ghost rejections after invalidation.
+    const rows = db().listEntries({ limit: 10_000 })
+      .filter((r) => r.scope === req.params.scope);
+    for (const r of rows) await vectors.deleteDocument(`e${r.id}`).catch(() => {});
     const removed = db().deleteByScope(req.params.scope);
+    invalidateVectorCache();
     return { scope: req.params.scope, removed };
   });
 
   app.delete("/cache/chapter/:chapterCode", async (req, reply) => {
     if (!adminOk(req)) return reply.code(404).send({ detail: "not found" });
+    const rows = db().listEntries({ limit: 10_000 }).filter((r) => {
+      try { return JSON.parse(r.envelope_json || "{}").chapter_code === req.params.chapterCode; }
+      catch { return false; }
+    });
+    for (const r of rows) await vectors.deleteDocument(`e${r.id}`).catch(() => {});
     const removed = db().deleteByChapter(req.params.chapterCode);
+    invalidateVectorCache();
     return { chapter_code: req.params.chapterCode, removed };
   });
 
@@ -406,9 +447,12 @@ export async function build() {
     return { seeded: n };
   });
 
+  // Never purge vectors here. SQLite rows survive a restart; deleting the
+  // vector index silently disabled semantic hits until every answer was
+  // regenerated. Explicit invalidation is the ONLY thing that clears both
+  // stores together (see /cache/purge, /cache/clear).
   app.addHook("onClose", async () => {
     await model.shutdown();
-    await vectors.purgeIndex?.();
     db().close();
   });
 

@@ -122,12 +122,17 @@ test("difficulty is banded, not exact", () => {
 // Sampling class: the semantic tier must not cross sampling regimes.
 
 test("sampling class separates deterministic, sampled and constrained requests", () => {
-  assert.equal(samplingClass({}), "det");
-  assert.equal(samplingClass({ temperature: 0 }), "det");
-  assert.equal(samplingClass({ temperature: 0.3 }), "sample");
-  assert.equal(samplingClass({ temperature: 0.3, top_k: 1 }), "sample-constrained-1");
-  assert.equal(samplingClass({ temperature: 0.3, top_p: 0.9 }), "sample-constrained-1");
-  assert.equal(samplingClass({ temperature: 0.3, top_k: 1, min_p: 0.1 }), "sample-constrained-2");
+  // #8: the class now includes EVERY answer-changing sampling parameter.
+  assert.ok(samplingClass({}).startsWith("det:"));
+  assert.equal(samplingClass({}), samplingClass({ temperature: 0 }));
+  assert.ok(samplingClass({ temperature: 0.3 }).startsWith("sample:"));
+  assert.notEqual(samplingClass({ temperature: 0.3 }), samplingClass({ temperature: 0.4 }));
+  assert.notEqual(samplingClass({ temperature: 0.3, seed: 1 }),
+                  samplingClass({ temperature: 0.3, seed: 2 }));
+  assert.notEqual(samplingClass({ temperature: 0.3, repeat_penalty: 1.1 }),
+                  samplingClass({ temperature: 0.3 }));
+  assert.notEqual(samplingClass({ temperature: 0, max_tokens: 100 }),
+                  samplingClass({ temperature: 0 }));
 });
 
 // ---------------------------------------------------------------------------

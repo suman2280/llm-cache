@@ -99,7 +99,7 @@ export function stemmedTerms(text) {
  * @param {boolean} chunkOverlap  do the query and the candidate share a KB chunk?
  * @param {number} threshold     minimum coverage of the query's specific terms
  */
-export function coverageVerdict(query, candPrompt, candAnswer, chunkOverlap, threshold = 0.75) {
+export function coverageVerdict(query, candPrompt, candAnswer, chunkOverlap, threshold = 0.75, chunkText = "") {
   // A question made entirely of generic words ("tell me about AWS", "what is
   // EC2?") has no specific terms: the framing verbs are stopwords and the
   // domain name itself is generic. Fall back to content words so such a
@@ -109,7 +109,12 @@ export function coverageVerdict(query, candPrompt, candAnswer, chunkOverlap, thr
     ? (text) => new Set([...contentTerms(text)].map(stem))
     : stemmedTerms;
   const q = termFn(query);
-  const c = new Set([...termFn(candPrompt), ...termFn(candAnswer)]);
+  // #13: match against the candidate's QUESTION and the shared KB source,
+  // never against the cached ANSWER. A long answer mentions many topics
+  // incidentally, so "What is EC2?" answering about security groups must not
+  // satisfy a query about security groups. The curated chunk text is the
+  // authority for what an entry is actually about.
+  const c = new Set([...termFn(candPrompt), ...termFn(chunkText)]);
   const matched = [...q].filter((t) => c.has(t));
   const unmatched = [...q].filter((t) => !c.has(t));
   const coverage = q.size ? matched.length / q.size : 0;

@@ -58,14 +58,17 @@ export function answerAffecting(body) {
  * Exact-tier fingerprint: sha256 over model + messages + every answer-affecting
  * param. Byte-identical requests -> identical fingerprint.
  */
-export const requestFingerprint = (body) => sha256(canonical({
+export const requestFingerprint = (body, scope = "") => sha256(canonical({
+  // #11: scope is part of the identity. Identical text under two concepts
+  // used to collide on one row and inherit the other's provenance.
+  scope,
   model: body?.model,
   messages: body?.messages,
   params: answerAffecting(body),
 }));
 
 /** One Redis key per (model, scope, fingerprint). */
-export const exactKey = (body, scope) => `${scope}:${requestFingerprint(body)}`;
+export const exactKey = (body, scope) => `${scope}:${requestFingerprint(body, scope)}`;
 
 /**
  * The text the semantic tier embeds: the WHOLE conversation.
@@ -171,18 +174,34 @@ export function scopeOf(envelope, samplingClass) {
  * "temperature 0.3" and "temperature 0.4" may still share, while
  * "temperature 0.3 + top_k 1" may not reuse "temperature 0.3 + default".
  */
+const SAMPLING_KEYS = [
+  "temperature", "top_p", "top_k", "min_p", "seed", "stop",
+  "frequency_penalty", "presence_penalty", "repeat_penalty", "mirostat",
+  "mirostat_tau", "mirostat_eta", "max_tokens", "num_predict", "n",
+  "logit_bias", "logprobs", "top_logprobs", "grammar", "dry_multiplier",
+  "dry_base", "dry_allowed_length", "dry_penalty_last_n",
+];
+
+/**
+ * Identity of the sampling regime for the SEMANTIC scope.
+ *
+ * #8: the old version only distinguished temperature=0 from the presence of
+ * top_p/top_k/min_p. Requests with the same text but a different seed,
+ * repeat_penalty or max_tokens landed in the same scope, so a cached answer
+ * could be served for a materially different generation request.
+ */
 export function samplingClass(body) {
   const b = body ?? {};
-  const temp = Number(b.temperature ?? 0);
-  const deterministic = temp === 0;
-  const constrained = [
-    b.top_p !== undefined && b.top_p !== null,
-    b.top_k !== undefined && b.top_k !== null,
-    b.min_p !== undefined && b.min_p !== null,
-  ].filter(Boolean).length;
-  if (deterministic) return "det";
-  if (constrained > 0) return `sample-constrained-${constrained}`;
-  return "sample";
+  const base = Number(b.temperature ?? 0) === 0 ? "det" : "sample";
+  const params = {};
+  for (const k of SAMPLING_KEYS) {
+    if (b[k] === undefined || b[k] === null) continue;
+    // temperature 0 is the default; an explicit 0 must not create a distinct
+    // scope from an omitted temperature.
+    if (k === "temperature" && Number(b[k]) === 0) continue;
+    params[k] = b[k];
+  }
+  return `${base}:${sha256(canonical(params)).slice(0, 12)}`;
 }
 
 export function difficultyBand(v) {

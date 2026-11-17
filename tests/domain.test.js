@@ -89,7 +89,8 @@ test("a domain term is enough on its own", async () => {
 test("the classification explains itself", async () => {
   const v = await policy.classify("How do I enable versioning on an S3 bucket?");
   assert.match(v.reason, /domain vocabulary|semantic similarity/);
-  assert.equal(typeof v.semantic, "number");
+  // a lexical hit short-circuits, so no embedding is done and semantic is null
+  assert.ok(v.semantic === null || typeof v.semantic === "number");
   assert.equal(typeof v.lexical, "number");
 });
 

@@ -58,56 +58,48 @@ async function healthy() {
   }
 }
 
-export async function ensureModel() {
-  if (state === "running") { lastUsedAt = Date.now(); return config.upstreamUrl; }
-  if (state === "starting") {
-    // wait for the in-flight spawn
-    const deadline = Date.now() + 90_000;
-    while (state === "starting" && Date.now() < deadline) await sleep(150);
-    if (state === "running") { lastUsedAt = Date.now(); return config.upstreamUrl; }
-    throw new Error("model did not start in time");
-  }
+/**
+ * Start the model once. All concurrent callers join `startingPromise`, so a
+ * burst of cold misses cannot spawn two ~4.6 GB processes and orphan one.
+ * A child that exits during startup is a TERMINAL error: the old loop reset
+ * `stopped` back to `starting`, so every request waited the full 90-120 s
+ * even though the model was already dead.
+ */
+let startingPromise = null;
+let startupError = null;
 
-  // If something else already serves the port, use it (external llama-server).
-  if (await healthy()) {
-    state = "running";
-    lastUsedAt = Date.now();
-    return config.upstreamUrl;
-  }
-
-  state = "starting";
+async function startModel() {
   const t0 = Date.now();
   const [bin, ...args] = config.modelCommand ? config.modelCommand.split(" ") : defaultCmd();
+  let child;
   try {
-    proc = spawn(bin, args, {
+    child = spawn(bin, args, {
       cwd: config.modelCwd || undefined,
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, LLAMA_API_KEY: config.upstreamKey },
     });
   } catch (err) {
-    state = "stopped";
     throw new Error(`model spawn failed: ${err.message}`);
   }
 
+  proc = child;
+  let exited = false;
   let out = "";
-  proc.stdout.on("data", (d) => {
-    out += d.toString();
-    if (out.length > 4000) out = out.slice(-4000);
-  });
-  proc.stderr.on("data", (d) => {
-    out += d.toString();
-    if (out.length > 4000) out = out.slice(-4000);
-  });
-  proc.on("exit", (code) => {
+  const collect = (d) => { out = (out + d.toString()).slice(-4000); };
+  child.stdout.on("data", collect);
+  child.stderr.on("data", collect);
+  child.on("exit", (code) => {
     console.log(`[model] exited (code ${code}) after ${Date.now() - t0} ms`);
-    proc = null;
-    state = "stopped";
+    collect(`\n[model exited with code ${code}]`);
+    exited = true;
+    if (proc === child) { proc = null; }
+    if (state === "starting") state = "stopped";
   });
 
   spawns += 1;
   const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
-    if (proc === null) state = "starting";
+    if (exited) break; // fail fast, never wait out the timeout on a dead child
     if (await healthy()) {
       state = "running";
       lastUsedAt = Date.now();
@@ -117,8 +109,48 @@ export async function ensureModel() {
     }
     await sleep(300);
   }
+
+  if (exited) {
+    throw new Error(`model exited during startup: ${out.slice(-500)}`);
+  }
   await shutdown();
-  throw new Error(`model did not become healthy.\n${out.slice(-500)}`);
+  throw new Error(`model did not become healthy within 120s.\n${out.slice(-500)}`);
+}
+
+export async function ensureModel() {
+  if (state === "running" && proc) {
+    lastUsedAt = Date.now();
+    return config.upstreamUrl;
+  }
+  if (startingPromise) {
+    try {
+      await startingPromise;
+    } catch (err) {
+      throw err;
+    }
+    if (state === "running") { lastUsedAt = Date.now(); return config.upstreamUrl; }
+    throw startupError ?? new Error("model did not start");
+  }
+  // An already-running external server needs no spawn.
+  if (await healthy()) {
+    state = "running";
+    lastUsedAt = Date.now();
+    return config.upstreamUrl;
+  }
+
+  state = "starting"; // set BEFORE the first await -- no double spawn
+  startupError = null;
+  startingPromise = startModel();
+  try {
+    const url = await startingPromise;
+    return url;
+  } catch (err) {
+    startupError = err;
+    state = "stopped";
+    throw err;
+  } finally {
+    startingPromise = null;
+  }
 }
 
 /**

@@ -133,11 +133,23 @@ export class Store {
               @envelope_json,@template_id,@params_json,@chunk_ids,@actual_answer,@generation_method,
               @verification_method,@review_status,@source_prompt,@created_at,@last_used_at,0)
       ON CONFLICT(fingerprint) DO UPDATE SET
-        response_json   = excluded.response_json,
+        -- #30: update EVERY column. A partial update left the new answer
+        -- paired with the old scope, prompt, chunk ids and template provenance.
+        scope           = excluded.scope,
+        model           = excluded.model,
         semantic_text   = excluded.semantic_text,
+        prompt          = excluded.prompt,
+        response_json   = excluded.response_json,
         symbol_fp       = excluded.symbol_fp,
         envelope_json   = excluded.envelope_json,
+        template_id     = excluded.template_id,
+        params_json     = excluded.params_json,
+        chunk_ids       = excluded.chunk_ids,
+        actual_answer   = excluded.actual_answer,
+        generation_method = excluded.generation_method,
+        verification_method = excluded.verification_method,
         review_status   = excluded.review_status,
+        source_prompt   = excluded.source_prompt,
         last_used_at    = excluded.last_used_at
     `).run(entry);
     return r.lastInsertRowid;
