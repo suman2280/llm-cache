@@ -157,12 +157,16 @@ export function parseEnvelope(raw) {
  * Difficulty is banded (not exact) so "difficulty 2" may reuse "difficulty 3"
  * within a concept but never across concepts.
  */
-export function scopeOf(envelope, samplingClass) {
+export function scopeOf(envelope, samplingClass, tenant = "local") {
   const chapter = envelope.chapter_code || "_";
   const asset = envelope.asset_type || "chat";
   const concept = envelope.concept_id || "_";
   const band = difficultyBand(envelope.difficulty_level);
-  return sha256([chapter, asset, concept, band, samplingClass || "_"].join("\u0000")).slice(0, 32);
+  // #33: a semantic cache is tenant-scoped by construction. The tenant is
+  // server-side config, NEVER a client header, so one caller cannot read
+  // another's partition by guessing a name.
+  return sha256([tenant || "_", chapter, asset, concept, band,
+    samplingClass || "_"].join("\u0000")).slice(0, 32);
 }
 
 /**

@@ -36,6 +36,7 @@ import * as templates from "./templates.js";
 import { DomainPolicy, OPEN_POLICY } from "./domain.js";
 import { coverageVerdict } from "./lexicon.js";
 import { storeBreaker } from "./breaker.js";
+import { inferenceLimiter } from "./ratelimit.js";
 import { splitIntents } from "./intents.js";
 import { retrieve, groundRequest, PREFILL, assembleAnswer } from "./knowledge.js";
 import { detectDegeneracy } from "./degenerate.js";
@@ -166,6 +167,20 @@ function boundedTokens(value) {
   return Math.min(Math.max(requested, config.maxAnswerTokens), ceiling);
 }
 
+/**
+ * #37: acceptance is not one global number. Curated and template entries are
+ * human-verified and can be reused at a lower coverage; model-generated
+ * entries are unverified drafts and need a higher bar. The declared error
+ * budget (TARGET_FPR) is reported alongside the MEASURED rate from
+ * scripts/bench_cache.mjs -- a target alone proves nothing.
+ */
+const THRESHOLD_BY_ORIGIN = {
+  curated: 0.70,
+  deterministic_template: 0.75,
+  model: 0.85,
+};
+const coverageThreshold = (origin) => THRESHOLD_BY_ORIGIN[origin] ?? 0.80;
+
 /** The contract's three distance headers. One source of truth so they cannot drift. */
 function distanceHeaders(distance = 0) {
   const d = Number(distance) || 0;
@@ -235,19 +250,33 @@ async function verifyCandidate(candidate, ctx) {
   let answer = "";
   try { answer = answerText(JSON.parse(candFp?.response_json || "{}")) ?? ""; } catch { /* ignore */ }
   const candChunks = String(candFp?.chunk_ids || "").split(",").filter(Boolean);
+  // #13: require the TOP chunk to match, not just any overlap. "How do I
+  // price an EC2 spot instance?" and "What is an EC2 instance?" share the
+  // EC2 topic, but their top chunks (ec2-pricing vs ec2-instances) differ --
+  // and a shared ancestor must not license serving one for the other.
   const chunkOverlap = ctx.chunkIds?.length
-    ? ctx.chunkIds.some((id) => candChunks.includes(id))
+    ? Boolean(ctx.chunkIds[0] && candChunks[0] === ctx.chunkIds[0])
     : false;
   // A query that grounds in a chunk may only reuse an entry that grounds in
   // the same chunk. A query that grounds in NO chunk (a topic the knowledge
   // base does not cover) falls back to coverage alone.
   const sameMaterial = ctx.chunkIds?.length ? chunkOverlap : true;
   const verdict = coverageVerdict(ctx.queryText, candFp?.prompt ?? "", answer,
-    sameMaterial, 0.75, ctx.chunkText || "");
+    sameMaterial, coverageThreshold(candFp?.generation_method), ctx.chunkText || "");
   if (!verdict.ok) {
     return { ok: false, reason: `not the same question: ${verdict.reason}` };
   }
   ctx.lastOverlap = verdict;
+
+  // 2b. #38: re-run the domain guard on the CACHED QUESTION, not just on the
+  //     incoming request. An entry that was acceptable when written can have
+  //     been written through a bypass path, or its context can have changed.
+  if (ctx.policy && ctx.policy.mode !== "off" && candFp?.prompt) {
+    const stored = await ctx.policy.classify(candFp.prompt).catch(() => null);
+    if (stored && !stored.inDomain) {
+      return { ok: false, reason: `cached entry is out of domain: ${stored.reason}` };
+    }
+  }
 
   // 3. deterministic recomputation -- if the entry is template-generated, its
   //    answer must still be what the template computes from its own params.
@@ -326,16 +355,20 @@ function deterministicTier(envelope) {
 // ---------------------------------------------------------------------------
 // The main entry point
 
-export async function handleChat(body, { envelopeHeader = "", role = "author", maxTokens, requireGrounded = false } = {}) {
+export async function handleChat(body, { envelopeHeader = "", role = "author", maxTokens,
+  requireGrounded = false, trusted = false, clientId = "local" } = {}) {
   const started = performance.now();
   const envelope = parseEnvelope(envelopeHeader);
   const sClass = samplingClass(body);
-  const scope = scopeOf(envelope, sClass);
+  const scope = scopeOf(envelope, sClass, config.tenantId);
   const semText = semanticText(body?.messages);
   const prompt = lastUserText(body?.messages);
   const symbolFp = symbolFingerprint(semText);
-  const fingerprint = requestFingerprint(body);
+  const fingerprint = requestFingerprint(body, scope);
   const minReviewStatus = role === "author" ? "draft" : (config.minReviewStatus || null);
+  // Declare BEFORE ctx: ctx captures `policy`, and a later declaration is a
+  // temporal dead zone error that the route catch turns into a silent 500.
+  const policy = await getPolicy();
 
   // The lexical guard compares the QUESTION, not the whole conversation: the
   // system prompt is boilerplate that appears in every request, so counting
@@ -352,8 +385,11 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
 
   const ctx = {
     scope, symbolFp, minReviewStatus, body, envelope,
+    policy,
     queryText: prompt || semText,
     fingerprint,
+    trusted,
+    clientId,
     // The content path is strict: an ungrounded answer may not become content.
     // The chat path serves it labelled and uncached.
     requireGrounded,
@@ -397,7 +433,6 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   // ("100% correct refusal"). Measured, it does not: 0 of 6 out-of-scope
   // questions were refused. So the promise is enforced here, before any tier
   // can serve or store an answer.
-  const policy = await getPolicy();
   let domain = null;
   if (policy.mode !== "off") {
     // Guard the USER'S QUESTION, not the whole conversation. A system prompt
@@ -665,6 +700,14 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   }
 
   const t2 = performance.now();
+  // #14: an actual inference, not a cache hit, is the expensive thing.
+  const admitted = inferenceLimiter.allow(ctx.clientId || "local");
+  if (!admitted.allowed) {
+    const err = new Error("inference rate limit exceeded; please retry shortly");
+    err.statusCode = 429;
+    err.public = true;
+    throw err;
+  }
   let payload;
   let failure = null;
   let grounding = null;
@@ -800,7 +843,10 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   // not be able to resurface later as a "semantic hit" for something else.
   // Nothing that failed a check may be cached. An ungrounded answer replayed
   // to every later request would be worse than no cache at all.
-  if (!ctx.outOfDomain && !failure) {
+  if (config.trustedWritesOnly && !ctx.trusted) {
+    console.warn(`[cache] quarantined an untrusted answer from ${ctx.clientId} (not cached)`);
+  }
+  if (!ctx.outOfDomain && !failure && !(config.trustedWritesOnly && !ctx.trusted)) {
   try {
     const reviewStatus = role === "author" ? "draft" : "needs_academic_review";
     const entryId = db().insertEntry({
@@ -902,7 +948,7 @@ async function resolveIntent(intent, ctx) {
     if (!answer) continue;
     const candChunks = String(row.chunk_ids || "").split(",").filter(Boolean);
     const verdict = coverageVerdict(intent, row.prompt, answer,
-      chunkIds.some((id) => candChunks.includes(id)), 0.75,
+      Boolean(chunkIds[0] && candChunks[0] === chunkIds[0]), 0.75,
       chunks.map((c) => `${c.title} ${c.text}`).join(" "));
     if (verdict.ok) {
       db().touchHit(row.id);
@@ -957,6 +1003,13 @@ export function statsPayload() {
       // additive: the frozen UI ignores fields it does not read
       model_state: model.modelStats(),
       domain: policyInfo(),
+      error_budget: {
+        target_fpr: config.targetFpr,
+        // provenance-dependent thresholds; the measured FPR comes from
+        // `node scripts/bench_cache.mjs`, not from this process
+        coverage_thresholds: THRESHOLD_BY_ORIGIN,
+        measured_fpr: null,
+      },
       store_breaker: storeBreaker.describe(),
       cache_entries: db().countEntries(),
       embedder_loaded: isLoaded(),

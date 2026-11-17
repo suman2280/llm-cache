@@ -559,7 +559,7 @@ The model process appears on a miss and **disappears** 120 s after the last one
 | `npm run seed` | seed the demonstration corpus |
 | `npm run contract` | assert the backend satisfies the frozen UI's contract |
 | `npm run bench:model` | measure the inference layer (throughput, latency, memory, refusal) |
-| `npm test` | 97 tests: the dashboard's reconciliation planner + the backend's keying and templates |
+| `npm test` | 106 tests: the dashboard's reconciliation planner + the backend's keying and templates |
 | `npm run check:dashboard` | every id `app.js` reaches for exists in `index.html` |
 | `node scripts/ui_smoke.mjs` | drive the dashboard in a real Chrome (11 checks) |
 | `node scripts/screenshot.mjs` | capture the dashboard for the docs |
@@ -570,7 +570,7 @@ The dashboard is frozen, so the backend is checked against it mechanically:
 
 ```bash
 node scripts/check_api_contract.mjs http://localhost:8000
-# 45/45 contract checks pass.
+# 40/40 contract checks pass.
 # The frozen dashboard will work against this backend unchanged.
 ```
 
@@ -592,6 +592,24 @@ which drives the dashboard's **Run the demo** button through
 stale banner when `/stats` stops answering, and asserts **zero external requests**.
 
 ---
+
+## Cache benchmark
+
+`node scripts/bench_cache.mjs` measures the **verifier**, not the model — no model or Redis
+needed. 40 labelled pairs, Wilson 95% intervals, and a corpus-size sweep:
+
+```
+recall (hits among should-hit) : 18/20 = 90.0%  95% CI 69.9-97.2%
+FPR    (hits among must-not)  : 0/20 = 0.0%  95% CI 0.0-16.1%
+confusion: TP=18 FP=0 TN=20 FN=2
+topK 1/3/5/10  ->  recall 90% flat, FPR 0% flat
+```
+
+The target FPR is declared (`TARGET_FPR=0.01`) and the per-origin coverage thresholds are
+reported in `/stats.service.error_budget`; the measured rate above is the evidence, not the
+target. The benchmark caught a real false positive ("How do I price an EC2 spot instance?" was
+served "What is an EC2 instance?"), which is why equivalence now requires the **top** KB chunk
+to match rather than any shared ancestor.
 
 ## The SOP mapping
 

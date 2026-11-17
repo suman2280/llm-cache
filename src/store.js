@@ -72,6 +72,18 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(id DESC);
 
+-- #38: an auditable review trail. Promoting to "production" requires two
+-- distinct approvers, so no single caller can release content alone.
+CREATE TABLE IF NOT EXISTS review_log (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  record_id  INTEGER NOT NULL,
+  status     TEXT    NOT NULL,
+  actor      TEXT    NOT NULL,
+  rationale  TEXT    NOT NULL DEFAULT '',
+  ts         TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_review_log_record ON review_log(record_id, id);
+
 CREATE TABLE IF NOT EXISTS counters (
   name  TEXT PRIMARY KEY,
   value INTEGER NOT NULL DEFAULT 0
@@ -192,6 +204,21 @@ export class Store {
 
   setReviewStatus(id, status) {
     return this.db.prepare("UPDATE cache_entries SET review_status = ? WHERE id = ?").run(status, id).changes;
+  }
+
+  /** #38: append an immutable review event. */
+  logReview(id, status, actor, rationale = "") {
+    this.db.prepare(
+      "INSERT INTO review_log(record_id,status,actor,rationale,ts) VALUES (?,?,?,?,?)",
+    ).run(id, status, String(actor || "unknown"), String(rationale || "").slice(0, 500),
+      new Date().toISOString());
+  }
+
+  /** Distinct actors who previously recorded an approval for this record. */
+  approversFor(id) {
+    return this.db.prepare(
+      "SELECT DISTINCT actor FROM review_log WHERE record_id = ? AND status IN ('approved','production')",
+    ).all(id).map((r) => r.actor);
   }
 
   deleteEntry(id) {

@@ -96,15 +96,19 @@ export async function build() {
   // ---- OpenAI-compatible chat ----------------------------------------
   app.post("/v1/chat/completions", async (req, reply) => {
     const envelopeHeader = String(req.headers["x-content-envelope"] || "");
-    const role = adminOk(req) ? "author" : "consumer";
+    const trusted = adminOk(req);
+    const role = trusted ? "author" : "consumer";
+    const clientId = String(req.ip || req.socket?.remoteAddress || "local");
     try {
       const out = await cache.handleChat(req.body, {
         envelopeHeader, role, maxTokens: req.body?.max_tokens,
+        trusted, clientId,
       });
       reply.headers(out.headers);
       return out.response;
     } catch (err) {
       const status = err.statusCode ?? 500;
+      if (!err.public) console.error("[chat] unexpected error:", err.stack || err.message);
       reply.code(status);
       // The UI reads `payload.detail` (a string) to build its error line.
       return { detail: err.public ? err.message : "internal error" };
@@ -236,7 +240,9 @@ export async function build() {
   app.post("/content/generate", async (req, reply) => {
     const b = req.body ?? {};
     const envelope = parseEnvelope(String(req.headers["x-content-envelope"] || ""));
-    const role = adminOk(req) ? "author" : "consumer";
+    const trusted = adminOk(req);
+    const role = trusted ? "author" : "consumer";
+    const clientId = String(req.ip || req.socket?.remoteAddress || "local");
 
     // Same rules as a chat request, but the prompt is built from the envelope
     // so the demo is deterministic and inspectable.
@@ -278,7 +284,7 @@ export async function build() {
       }
       const out = await cache.handleChat(body, {
         envelopeHeader: encodeEnvelope(full), role, maxTokens: 400,
-        requireGrounded: true,
+        requireGrounded: true, trusted, clientId,
       });
       db().insertEntry({
         // Tier 0 entries must have a REAL key: the column is UNIQUE and the
@@ -330,7 +336,7 @@ export async function build() {
     // answer is an error here, never a 200 with "needs_verification".
     const out = await cache.handleChat(body, {
       envelopeHeader: encodeEnvelope(full), role, maxTokens: body.max_tokens,
-      requireGrounded: true,
+      requireGrounded: true, trusted, clientId,
     });
     return {
       asset_type: full.asset_type, concept_id: full.concept_id, chapter_code: full.chapter_code,
@@ -376,6 +382,18 @@ export async function build() {
     }
     const row = db().getById(id);
     if (!row) return reply.code(404).send({ detail: `no record ${id}` });
+    const actor = String(req.body?.approver || req.headers["x-admin-token"] || "operator");
+    const rationale = String(req.body?.rationale || "");
+    // #38: production release needs a second, DISTINCT approver.
+    if (status === "production" && row.review_status !== "production") {
+      const prior = db().approversFor(id).filter((a) => a !== actor);
+      if (!prior.length) {
+        return reply.code(409).send({
+          detail: "production requires a second distinct approver; record the first with status 'approved'",
+        });
+      }
+    }
+    db().logReview(id, status, actor, rationale);
     // Keep the row. Deleting it on approval destroyed the review decision:
     // the next request regenerated the entry as a draft and had to be
     // reviewed again, so an approved answer could never be served as approved.

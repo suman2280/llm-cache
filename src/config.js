@@ -126,12 +126,24 @@ export const config = {
   requireApproval: envBool("REQUIRE_APPROVAL", false),
   adminToken: env("ADMIN_TOKEN", ""),
 
-  // ---- observability ---------------------------------------------------
+  // ---- tenancy / admission ---------------------------------------------
+  // #33: single-tenant PoC. A real deployment must derive this from auth.
+  tenantId: env("TENANT_ID", "local"),
+  // #14: cap expensive generations per client address per minute.
+  maxInferencesPerMinute: envInt("MAX_INFERENCES_PER_MINUTE", 20),
+  // #34: only trusted callers may write to the shared cache. Others get an
+  // answer but their entry is quarantined (served once, never reused).
+  trustedWritesOnly: envBool("TRUSTED_WRITES_ONLY", true),
+
   // ---- cache size / lifetime -------------------------------------------
   // #36: bound both stores. 0 disables the cap.
   maxEntries: envInt("MAX_ENTRIES", 5000),
   // R-17: a hit has no `usage` object, so tokens saved are estimated.
   estimatedTokensPerAnswer: envInt("ESTIMATED_TOKENS_PER_ANSWER", 250),
+  // #37: declared target false-positive rate. Coverage thresholds are
+  // provenance-dependent (see THRESHOLD_BY_ORIGIN in cache.js); the measured
+  // operating point comes from scripts/bench_cache.mjs.
+  targetFpr: envFloat("TARGET_FPR", 0.01),
   // #9: age-based invalidation in seconds. 0 disables TTL.
   cacheTtlS: envInt("CACHE_TTL_S", 0),
 

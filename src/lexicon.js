@@ -30,7 +30,7 @@ let lets get gets getting go goes going make makes making use uses used using
 way ways thing things stuff kind sort type types
 differ differs difference differences compare compares comparison comparing versus vs
 explain explains explanation describe describes telling tell overview summarize summarises
-means mean meaning`.split(/\s+/));
+means mean meaning set sets setup`.split(/\s+/));
 
 /**
  * Words that are topical only in the loosest sense. They appear in almost

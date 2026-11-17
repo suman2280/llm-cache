@@ -39,6 +39,9 @@ async function main() {
 
   // #28: without this the embedder's unload timer was dead code and the ONNX
   // runtime (~250 MB) stayed resident once the semantic tier had used it.
+  const { configureLimiter } = await import("./ratelimit.js");
+  configureLimiter(config.maxInferencesPerMinute);
+
   const { startIdleTimer } = await import("./embedder.js");
   startIdleTimer();
 }
