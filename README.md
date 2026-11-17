@@ -115,7 +115,7 @@ checkpoint**. Without it the model answers from parametric memory:
 ```
 
 So grounding is rebuilt from a knowledge base that ships with the repo
-(`knowledge/aws-knowledge.json` — 38 curated, citable AWS chunks). The same MiniLM embedder
+(`knowledge/aws-knowledge.json` — 53 curated, citable AWS chunks). The same MiniLM embedder
 that serves the semantic cache serves the retrieval, so there is no second model and no second
 toolchain. Retrieved chunks go into the system prompt with their source, and the answer is
 asked for a direct sentence, 3–5 specific bullets and a caveat.
@@ -322,8 +322,8 @@ Q: "s3 HTTPS encription"
      internet or within a VPC.        <- repeated 15 times, to the token limit
 ```
 
-Three things make that much worse than a bad answer: it is **truncated mid-sentence**, and
-**if it is cached it is served to every future request** for that question — and the semantic
+Two things make that much worse than a bad answer: a repeated line can be detected and
+retried, and **if it is cached it is served to every future request** for that question — and the semantic
 hits around it inherit the garbage.
 
 So:
@@ -331,7 +331,7 @@ So:
 - the **sampler** is defended — `frequency_penalty`, `presence_penalty`, `repeat_penalty` and
   DRY (llama.cpp's "Don't Repeat Yourself" sampler, designed for exactly this);
 - the **output** is checked (`src/degenerate.js`): a repeated line, a repeated 8-gram, or an
-  answer that ends mid-sentence is degenerate;
+  repeated line or a repeated 8-gram is degenerate (a missing full stop is NOT — that was a false positive);
 - a degenerate answer is **retried** once with a hotter sample and a different seed, and if it
   happens again it is **not cached** and the request fails rather than returning garbage;
 - at **startup** the cache is swept for already-degenerate answers and they are evicted — the
@@ -439,7 +439,7 @@ serves everything else at Node speed with no model resident at all.
 | State | Memory |
 |---|---|
 | App idle, model unloaded | **191 MB** (Node) — ~250 MB more once the embedder loads |
-| Model resident (7B Q4_K_M, ctx 512) | **4.72 GB RSS**, of which ~4.6 GB is file-backed and reclaimable |
+| Model resident (7B Q4_K_M, ctx 2048) | **~4.7 GB RSS**, of which ~4.6 GB is file-backed and reclaimable (~115 MB KV cache) |
 | Redis (Podman, capped 192 MB) | ~25 MB |
 
 `LLM_MODEL_IDLE_S` controls it: `0` unloads after every request, `120` (default) after two
@@ -559,7 +559,7 @@ The model process appears on a miss and **disappears** 120 s after the last one
 | `npm run seed` | seed the demonstration corpus |
 | `npm run contract` | assert the backend satisfies the frozen UI's contract |
 | `npm run bench:model` | measure the inference layer (throughput, latency, memory, refusal) |
-| `npm test` | 91 tests: the dashboard's reconciliation planner + the backend's keying and templates |
+| `npm test` | 97 tests: the dashboard's reconciliation planner + the backend's keying and templates |
 | `npm run check:dashboard` | every id `app.js` reaches for exists in `index.html` |
 | `node scripts/ui_smoke.mjs` | drive the dashboard in a real Chrome (11 checks) |
 | `node scripts/screenshot.mjs` | capture the dashboard for the docs |
@@ -570,7 +570,7 @@ The dashboard is frozen, so the backend is checked against it mechanically:
 
 ```bash
 node scripts/check_api_contract.mjs http://localhost:8000
-# 44/44 contract checks pass.
+# 45/45 contract checks pass.
 # The frozen dashboard will work against this backend unchanged.
 ```
 

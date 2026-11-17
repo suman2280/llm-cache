@@ -35,6 +35,7 @@ import * as model from "./model.js";
 import * as templates from "./templates.js";
 import { DomainPolicy, OPEN_POLICY } from "./domain.js";
 import { coverageVerdict } from "./lexicon.js";
+import { storeBreaker } from "./breaker.js";
 import { splitIntents } from "./intents.js";
 import { retrieve, groundRequest, PREFILL, assembleAnswer } from "./knowledge.js";
 import { detectDegeneracy } from "./degenerate.js";
@@ -478,6 +479,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
         tier: "exact", verified: 1,
       });
       db().increment(["requests", "exact_hits"]);
+      db().increment("tokens_saved", config.estimatedTokensPerAnswer);
       return {
         status: "exact-hit", tier: "exact",
         response: mintResponse(payload, { status: "hit" }),
@@ -517,6 +519,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
         embed_ms: timings.embed_ms, redis_ms: timings.redis_ms,
       });
       db().increment(["requests", "semantic_hits"]);
+      db().increment("tokens_saved", config.estimatedTokensPerAnswer);
       return {
         status: "semantic-hit", tier: "semantic",
         response: mintResponse({
@@ -542,7 +545,10 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
 
   // ---- tier 2: semantic ------------------------------------------------
   if (config.distanceThreshold > 0 && !ctx.multiIntentIncomplete) {
-    try {
+    if (!storeBreaker.allow()) {
+      ctx.cacheDegraded = "store circuit breaker open";
+      console.warn("[cache] store circuit breaker open -- skipping semantic tier");
+    } else try {
       // The KB chunks the question grounds in are needed by the verifier (a
       // shared chunk is what makes two questions "the same question"), so
       // retrieve them before the lookup rather than only on a miss.
@@ -580,6 +586,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
           return true;
         });
         timings.redis_ms = round1(performance.now() - t1);
+        storeBreaker.success();
 
         for (const cand of candidates) {
           if (cand.fingerprint === fingerprint) continue; // that's the exact tier's job
@@ -624,6 +631,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
       }
     } catch (err) {
       // A cache failure must never fail the user's request.
+      storeBreaker.failure();
       console.warn(`[cache] semantic tier degraded, falling through: ${err.message}`);
       ctx.cacheDegraded = err.message;
     }
@@ -772,6 +780,21 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
     throw e;
   }
   timings.infer_ms = round1(performance.now() - t2);
+
+  // #36/#9: keep both stores bounded and drop expired entries. The store
+  // returns the evicted rows so their Redis vectors can be removed too.
+  try {
+    const evicted = [
+      ...db().evictExpired(config.cacheTtlS * 1000),
+      ...db().evictToLimit(config.maxEntries),
+    ];
+    for (const row of evicted) {
+      await vectors.deleteDocument(`e${row.id}`).catch(() => {});
+    }
+    if (evicted.length) invalidateVectorCache();
+  } catch (err) {
+    console.warn(`[cache] eviction failed: ${err.message}`);
+  }
 
   // Store for tiers 1 and 2. An out-of-domain answer is NEVER stored: it must
   // not be able to resurface later as a "semantic hit" for something else.
@@ -930,10 +953,11 @@ export function statsPayload() {
       model: config.model,
       embedder: config.embedderModel,
       distance_threshold: config.distanceThreshold,
-      ttl_s: null,
+      ttl_s: config.cacheTtlS || null,
       // additive: the frozen UI ignores fields it does not read
       model_state: model.modelStats(),
       domain: policyInfo(),
+      store_breaker: storeBreaker.describe(),
       cache_entries: db().countEntries(),
       embedder_loaded: isLoaded(),
       vector_count: undefined,
@@ -949,6 +973,8 @@ export function statsPayload() {
       in_domain: counters.in_domain || 0,
       out_of_domain: counters.out_of_domain || 0,
       model_invocations: counters.model_invocations || 0,
+      // R-17: an ESTIMATE, not a measurement -- a hit has no `usage` object.
+      tokens_saved: counters.tokens_saved || 0,
       cache_hit_rate: requests ? Number((hits / requests).toFixed(4)) : null,
     },
     latency_ms: {

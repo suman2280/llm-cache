@@ -109,7 +109,7 @@ and killed 120 s after the last one.
 Run these before changing anything:
 
 ```bash
-npm test                                   # 91 unit tests, no services needed
+npm test                                   # 97 unit tests, no services needed
 node scripts/check_api_contract.mjs        # backend must satisfy the dashboard contract
 node scripts/ui_smoke.mjs                  # drives the real dashboard in headless Chrome
 ```
@@ -209,7 +209,7 @@ shape, update that document and the contract checker together.
 | a semantic tier looks "dead" (all misses) | check the app log for `[cache] semantic tier degraded` | fix the underlying error; the catch deliberately fails open |
 
 The **contract checker is the fastest way to tell whether your changes broke the dashboard**:
-if it prints `44/44 contract checks pass`, the UI still works against the backend.
+if it prints `45/45 contract checks pass`, the UI still works against the backend.
 
 ---
 

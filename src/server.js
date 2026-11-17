@@ -122,6 +122,56 @@ export async function build() {
   // ---- /stats (the frozen UI's contract) -------------------------------
   app.get("/stats", async () => cache.statsPayload());
 
+  /**
+   * R-17: Prometheus-format metrics. The dashboard's /stats is the JSON
+   * contract; this is the machine-readable surface for scraping.
+   */
+  app.get("/metrics", async (_req, reply) => {
+    const d = cache.statsPayload();
+    const t = d.totals;
+    const l = d.latency_ms;
+    const lines = [
+      "# HELP llm_cache_up Whether the proxy is serving.",
+      "# TYPE llm_cache_up gauge",
+      `llm_cache_up 1`,
+      "# HELP llm_cache_requests_total Requests handled.",
+      "# TYPE llm_cache_requests_total counter",
+      `llm_cache_requests_total ${t.requests || 0}`,
+      "# HELP llm_cache_hits_total Cache hits by tier.",
+      "# TYPE llm_cache_hits_total counter",
+      `llm_cache_hits_total{tier="exact"} ${t.exact_hits || 0}`,
+      `llm_cache_hits_total{tier="semantic"} ${t.semantic_hits || 0}`,
+      "# HELP llm_cache_misses_total Cache misses.",
+      "# TYPE llm_cache_misses_total counter",
+      `llm_cache_misses_total ${t.misses || 0}`,
+      "# HELP llm_cache_bypasses_total Bypasses.",
+      "# TYPE llm_cache_bypasses_total counter",
+      `llm_cache_bypasses_total ${t.bypasses || 0}`,
+      "# HELP llm_cache_errors_total Errors.",
+      "# TYPE llm_cache_errors_total counter",
+      `llm_cache_errors_total ${t.errors || 0}`,
+      "# HELP llm_cache_rejected_hits_total Candidates refused by the verifier.",
+      "# TYPE llm_cache_rejected_hits_total counter",
+      `llm_cache_rejected_hits_total ${t.rejected_hits || 0}`,
+      "# HELP llm_cache_model_invocations_total Actual model calls.",
+      "# TYPE llm_cache_model_invocations_total counter",
+      `llm_cache_model_invocations_total ${t.model_invocations || 0}`,
+      "# HELP llm_cache_tokens_saved_estimate Estimated completion tokens avoided (not measured).",
+      "# TYPE llm_cache_tokens_saved_estimate counter",
+      `llm_cache_tokens_saved_estimate ${t.tokens_saved || 0}`,
+      "# HELP llm_cache_entries Cached documents.",
+      "# TYPE llm_cache_entries gauge",
+      `llm_cache_entries ${d.service.cache_entries || 0}`,
+      "# HELP llm_cache_latency_ms Request latency over the event window.",
+      "# TYPE llm_cache_latency_ms gauge",
+      `llm_cache_latency_ms{quantile="0.5"} ${l.p50}`,
+      `llm_cache_latency_ms{quantile="0.9"} ${l.p90}`,
+      `llm_cache_latency_ms{quantile="0.99"} ${l.p99}`,
+    ];
+    reply.type("text/plain; version=0.0.4; charset=utf-8");
+    return lines.join("\n") + "\n";
+  });
+
   // NOTE: /stats/reset is deliberately NOT admin-gated.
   //
   // The frozen dashboard's "Reset counters" button POSTs here with no
@@ -137,7 +187,11 @@ export async function build() {
   });
 
   app.post("/stats/record-event", async (req, reply) => {
-    if (!config.allowSeed) return reply.code(404).send({ detail: "demo seed disabled" });
+    // #10: seeding fabricates events and inflates counters. It needs BOTH the
+    // feature flag and an authorized caller, not just the flag.
+    if (!config.allowSeed || !adminOk(req)) {
+      return reply.code(404).send({ detail: "demo seed disabled" });
+    }
     const b = req.body ?? {};
     const status = ["miss", "exact-hit", "semantic-hit", "bypass", "error",
       "deterministic-hit", "semantic-hit-rejected"].includes(b.status) ? b.status : "miss";

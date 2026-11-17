@@ -123,6 +123,36 @@ export class Store {
     return this.db.prepare("SELECT COUNT(*) n FROM cache_entries").get().n;
   }
 
+  /**
+   * #36: evict least-recently-used entries down to `limit`.
+   * Returns the deleted rows so the caller can remove their vector documents
+   * too -- the two stores must stay in sync.
+   */
+  evictToLimit(limit) {
+    const count = this.countEntries();
+    if (count <= limit) return [];
+    const rows = this.db.prepare(
+      "SELECT id, fingerprint, scope, chunk_ids, response_json FROM cache_entries " +
+      "ORDER BY last_used_at ASC, id ASC LIMIT ?",
+    ).all(count - limit);
+    const del = this.db.prepare("DELETE FROM cache_entries WHERE id = ?");
+    for (const r of rows) del.run(r.id);
+    return rows;
+  }
+
+  /** #9: delete entries older than `ttlMs`, returning them for vector cleanup. */
+  evictExpired(ttlMs) {
+    if (!ttlMs || ttlMs <= 0) return [];
+    const cutoff = Date.now() - ttlMs;
+    const rows = this.db.prepare(
+      "SELECT id, fingerprint, scope, chunk_ids, response_json FROM cache_entries " +
+      "WHERE created_at < ?",
+    ).all(cutoff);
+    const del = this.db.prepare("DELETE FROM cache_entries WHERE id = ?");
+    for (const r of rows) del.run(r.id);
+    return rows;
+  }
+
   insertEntry(entry) {
     const r = this.db.prepare(`
       INSERT INTO cache_entries

@@ -127,6 +127,14 @@ export const config = {
   adminToken: env("ADMIN_TOKEN", ""),
 
   // ---- observability ---------------------------------------------------
+  // ---- cache size / lifetime -------------------------------------------
+  // #36: bound both stores. 0 disables the cap.
+  maxEntries: envInt("MAX_ENTRIES", 5000),
+  // R-17: a hit has no `usage` object, so tokens saved are estimated.
+  estimatedTokensPerAnswer: envInt("ESTIMATED_TOKENS_PER_ANSWER", 250),
+  // #9: age-based invalidation in seconds. 0 disables TTL.
+  cacheTtlS: envInt("CACHE_TTL_S", 0),
+
   statsEventLimit: envInt("STATS_EVENT_LIMIT", 100),
   serviceName: env("SERVICE_NAME", "llm-cache"),
   serviceVersion: env("SERVICE_VERSION", "0.2.0"),

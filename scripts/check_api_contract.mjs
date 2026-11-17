@@ -141,15 +141,15 @@ async function main() {
     STATUSES.includes(hdr(miss, "x-cache-status")),
     `got ${JSON.stringify(hdr(miss, "x-cache-status"))}`,
   );
-  check(
-    "a served hit emits x-cache-distance and x-cache-similarity-score (UI-CONTRACT §8)",
-    hdr(miss, "x-cache-distance") !== null && hdr(miss, "x-cache-similarity-score") !== null,
-    `distance=${hdr(miss, "x-cache-distance")} score=${hdr(miss, "x-cache-similarity-score")}`,
-  );
 
   // ---- 4. exact tier keys on EVERYTHING -------------------------------
   const again = await send(NON_ASCII, 0);
   const st = hdr(again, "x-cache-status");
+  check(
+    "a served hit emits x-cache-distance and x-cache-similarity-score (UI-CONTRACT §8)",
+    hdr(again, "x-cache-distance") !== null && hdr(again, "x-cache-similarity-score") !== null,
+    `distance=${hdr(again, "x-cache-distance")} score=${hdr(again, "x-cache-similarity-score")}`,
+  );
   check(
     "identical request (same params) → exact-hit, not semantic-at-0 (UI-CONTRACT §7)",
     st === "exact-hit",
