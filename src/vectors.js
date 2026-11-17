@@ -19,8 +19,17 @@ import config from "./config.js";
 
 let client = null;
 let connecting = null;
+let _memory = null; // Map<key, {fields, vec}> for in-process tests
+
+/** Test seam: use an in-memory vector store instead of Redis. */
+export function useMemoryVectors(on = true) {
+  _memory = on ? new Map() : null;
+  client = null;
+  connecting = null;
+}
 
 export async function redis() {
+  if (_memory) return null;
   if (client?.isOpen) return client;
   if (connecting) return connecting;
   connecting = (async () => {
@@ -34,7 +43,7 @@ export async function redis() {
   return connecting;
 }
 
-export function isUp() { return Boolean(client?.isOpen); }
+export function isUp() { return Boolean(client?.isOpen) || Boolean(_memory); }
 
 const TAG_SPECIAL = new Set(",.<>{}[]\"':;!@#$%^&()-=~| \\");
 
@@ -52,7 +61,9 @@ async function indexExists(c) {
 }
 
 export async function ensureIndex() {
+  if (_memory) return;
   const c = await redis(); // establishes the connection first
+  if (!c) return;
   if (await indexExists(c)) return;
   await c.sendCommand([
     "FT.CREATE", config.vectorIndex, "ON", "HASH", "PREFIX", "1", `${config.redisKeyPrefix}:`,
@@ -68,6 +79,37 @@ export async function ensureIndex() {
     "DISTANCE_METRIC", "COSINE",
   ]);
   console.log(`[redis] created index ${config.vectorIndex} (dim ${config.vectorDim})`);
+}
+
+function cosineDistance(a, b) {
+  if (!a || !b || a.length !== b.length) return 2;
+  let dot = 0;
+  for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
+  // normalized vectors: distance = 1 - cosine similarity
+  return 1 - dot;
+}
+
+function memSearch(vec, { scope, model, chunks, radius, limit }) {
+  const out = [];
+  for (const [key, doc] of _memory.entries()) {
+    const f = doc.fields || {};
+    if (scope && f.scope !== scope) continue;
+    if (model && f.model !== model) continue;
+    if (chunks?.length) {
+      const have = String(f.chunks || "").split(",").filter(Boolean);
+      if (!chunks.some((c) => have.includes(String(c)))) continue;
+    }
+    const dist = cosineDistance(vec, doc.vec);
+    if (dist > radius) continue;
+    out.push({
+      id: key,
+      fingerprint: f.fingerprint, prompt: f.prompt, scope: f.scope,
+      generation_method: f.generation_method, review_status: f.review_status,
+      dist,
+    });
+  }
+  out.sort((a, b) => a.dist - b.dist);
+  return out.slice(0, limit);
 }
 
 function f32Bytes(vec) {
@@ -113,6 +155,7 @@ function pairsToObject(flat) { return flat; }
  * Returns up to `limit` docs with their cosine distance.
  */
 export async function searchScope(vec, { scope, model, limit = 3 }) {
+  if (_memory) return memSearch(vec, { scope, model, chunks: null, radius: Number(config.distanceThreshold), limit });
   const c = await redis();
   const filters = [`@scope:{${escapeTag(scope)}}`];
   if (model) filters.push(`@model:{${escapeTag(model)}}`);
@@ -143,8 +186,9 @@ export async function searchScope(vec, { scope, model, limit = 3 }) {
  * worth looking at.
  */
 export async function searchByChunks(vec, { chunks, scope, model, limit = 5 }) {
-  const c = await redis();
   if (!chunks?.length) return [];
+  if (_memory) return memSearch(vec, { scope, model, chunks, radius: 1.2, limit });
+  const c = await redis();
   const filters = [`@chunks:{${chunks.map(escapeTag).join("|")}}`];
   if (scope) filters.push(`@scope:{${escapeTag(scope)}}`);
   if (model) filters.push(`@model:{${escapeTag(model)}}`);
@@ -162,6 +206,12 @@ export async function searchByChunks(vec, { chunks, scope, model, limit = 5 }) {
 }
 
 export async function indexDocument(key, fields, vec) {
+  if (_memory) {
+    const payload = { ...fields };
+    if (Array.isArray(payload.chunks)) payload.chunks = payload.chunks.join(",");
+    _memory.set(`${config.redisKeyPrefix}:${key}`, { fields: payload, vec: Array.from(vec) });
+    return;
+  }
   const c = await redis();
   const payload = { ...fields, embedding: f32Bytes(vec) };
   // the chunk list is a multi-value TAG: RediSearch indexes each value, so
@@ -183,11 +233,13 @@ function flattenArgs(obj) {
 }
 
 export async function deleteDocument(key) {
+  if (_memory) { _memory.delete(`${config.redisKeyPrefix}:${key}`); return 1; }
   const c = await redis();
   return c.del(`${config.redisKeyPrefix}:${key}`);
 }
 
 export async function purgeIndex() {
+  if (_memory) { const n = _memory.size; _memory.clear(); return n; }
   const c = await redis();
   const keys = await c.keys(`${config.redisKeyPrefix}:*`);
   if (keys.length) await c.del(keys);
@@ -195,8 +247,10 @@ export async function purgeIndex() {
 }
 
 export async function vectorCount() {
+  if (_memory) return _memory.size;
   try {
     const c = await redis();
+    if (!c) return 0;
     const { total } = parseDocs(await c.sendCommand([
       "FT.SEARCH", config.vectorIndex, "*", "LIMIT", "0", "0", "DIALECT", "2",
     ]));

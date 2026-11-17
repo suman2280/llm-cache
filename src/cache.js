@@ -966,11 +966,16 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
 async function resolveIntent(intent, ctx) {
   const text = semanticText([{ role: "user", content: intent }]);
   const chunks = await retrieve(intent, config.groundingTopK).catch(() => []);
-  // temporarily swap the chunk context so the verifier checks THIS intent
+  // temporarily swap context so the verifier checks THIS intent, not the
+  // whole multi-intent message.
   const savedChunkIds = ctx.chunkIds;
   const savedChunkText = ctx.chunkText;
+  const savedQueryText = ctx.queryText;
+  const savedSymbolFp = ctx.symbolFp;
   ctx.chunkIds = chunks.map((c) => c.id);
   ctx.chunkText = chunks.map((c) => `${c.title} ${c.text}`).join(" ");
+  ctx.queryText = intent;
+  ctx.symbolFp = symbolFingerprint(intent);
   const chunkIds = chunks.map((c) => c.id);
   try {
   const vec = await embed(text);
@@ -1003,6 +1008,8 @@ async function resolveIntent(intent, ctx) {
   } finally {
     ctx.chunkIds = savedChunkIds;
     ctx.chunkText = savedChunkText;
+    ctx.queryText = savedQueryText;
+    ctx.symbolFp = savedSymbolFp;
   }
 }
 

@@ -23,6 +23,11 @@ export function getStore() {
   return _singleton;
 }
 
+/** Test seam: replace the singleton (e.g. with an in-memory Store). */
+export function setStore(store) { _singleton = store; }
+/** Test seam: drop the singleton so the next getStore() reopens from config. */
+export function resetStore() { if (_singleton) { try { _singleton.close(); } catch {} } _singleton = null; }
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS cache_entries (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,

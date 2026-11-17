@@ -30,7 +30,12 @@ async function load() {
   return loading;
 }
 
+let _embedForTests = null;
+/** Test seam: replace embedding with a deterministic stub. */
+export function setEmbedForTests(fn) { _embedForTests = fn; }
+
 export async function embed(text) {
+  if (_embedForTests) return _embedForTests(text);
   if (!text || !text.trim()) return null;
   const p = await load();
   lastUsedAt = Date.now();

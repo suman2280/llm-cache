@@ -30,6 +30,11 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 
 let _kb = null;
 let _vectors = null;
+let _retrieveForTests = null;
+/** Test seam: replace retrieval (e.g. to avoid real embedding/KB work). */
+export function setRetrieveForTests(fn) { _retrieveForTests = fn; }
+/** Test seam: drop cached KB vectors so a new embed stub takes effect. */
+export function resetKnowledgeForTests() { _vectors = null; }
 
 export function knowledgeBase() {
   if (_kb) return _kb;
@@ -79,14 +84,18 @@ async function vectors() {
  * @returns {Promise<Array<{id,topic,title,source,text,score}>>}
  */
 export async function retrieve(query, topK = 3, { margin = 0.05, topicMargin = 0.25, maxExtra = 2 } = {}) {
+  if (_retrieveForTests) return _retrieveForTests(query, topK, { margin, topicMargin, maxExtra });
   const kb = knowledgeBase();
   if (!kb.length) return [];
   const vecs = await vectors();
   const q = await embed(query);
+  if (!q) return [];
   const scored = [];
   for (let i = 0; i < kb.length; i++) {
     let dot = 0;
-    for (let j = 0; j < q.length; j++) dot += q[j] * vecs[i][j];
+    const v = vecs[i];
+    if (!v) continue;
+    for (let j = 0; j < q.length; j++) dot += q[j] * v[j];
     scored.push({ ...kb[i], score: Number(dot.toFixed(4)) });
   }
   scored.sort((a, b) => b.score - a.score);

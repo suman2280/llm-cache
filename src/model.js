@@ -160,6 +160,10 @@ export async function ensureModel() {
   }
 }
 
+let _inferForTests = null;
+/** Test seam: replace inference with a deterministic stub (no spawn/fetch). */
+export function setInferForTests(fn) { _inferForTests = fn; }
+
 /**
  * Run inference and account for it.
  *
@@ -169,6 +173,14 @@ export async function ensureModel() {
  * flags is an error.
  */
 export async function infer(body, { maxTokens, prefill } = {}) {
+  if (_inferForTests) {
+    const t0 = performance.now();
+    const out = await _inferForTests(body, { maxTokens, prefill });
+    totalInferMs += performance.now() - t0;
+    totalInferences += 1;
+    lastUsedAt = Date.now();
+    return out;
+  }
   const base = await ensureModel();
   const t0 = performance.now();
   const payload = { ...body };
