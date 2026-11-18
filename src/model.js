@@ -29,8 +29,9 @@ let totalInferences = 0;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function defaultCmd() {
-  return [
+/** #68: exported so spawn args (incl. prefix caching) are testable. */
+export function defaultCmd() {
+  const args = [
     config.llamaServerBin,
     "-m", config.modelGguf,
     "--lora-scaled", `${config.modelAdapter}:1.0`,
@@ -41,7 +42,33 @@ function defaultCmd() {
     "--no-warmup",
     "--api-key", config.upstreamKey,
   ];
+  // #68: llama.cpp reuses the KV cache of a matching prompt prefix across
+  // requests (the shared system prompt + RAG preamble). Disabled with
+  // MODEL_CACHE_PROMPT=0 if memory-constrained.
+  if (config.modelCachePrompt) args.push("--cache-prompt");
+  return args;
 }
+
+/** Extract prefill/decode timing + token counts from an upstream response. */
+export function extractTimings(json, wallStart) {
+  const u = json?.usage || {};
+  const t = json?.timings || {};
+  const now = performance.now();
+  const cached = u.prompt_tokens_details?.cached_tokens
+    ?? u.cached_tokens ?? t.cached_n ?? null;
+  return {
+    // llama.cpp reports prompt_ms / predicted_ms; OpenAI-compatible servers
+    // may not, in which case these stay null rather than being invented.
+    prompt_eval_ms: numOrNull(t.prompt_ms ?? u.prompt_eval_ms),
+    eval_ms: numOrNull(t.predicted_ms ?? u.eval_ms),
+    ttft_ms: numOrNull(t.prompt_ms ?? u.ttft_ms),
+    prompt_tokens: numOrNull(u.prompt_tokens ?? t.prompt_n),
+    completion_tokens: numOrNull(u.completion_tokens ?? t.predicted_n),
+    cached_tokens: numOrNull(cached),
+    wall_ms: Math.round(now - wallStart),
+  };
+}
+function numOrNull(v) { const n = Number(v); return Number.isFinite(n) ? Math.round(n * 100) / 100 : null; }
 
 const portOf = (url) => {
   try { return new URL(url).port || "8080"; } catch { return "8080"; }
@@ -179,7 +206,7 @@ export async function infer(body, { maxTokens, prefill } = {}) {
     totalInferMs += performance.now() - t0;
     totalInferences += 1;
     lastUsedAt = Date.now();
-    return out;
+    return { ...out, _timings: out._timings || extractTimings(out, t0) };
   }
   const base = await ensureModel();
   const t0 = performance.now();
@@ -230,7 +257,7 @@ export async function infer(body, { maxTokens, prefill } = {}) {
     const json = await res.json();
     totalInferMs += performance.now() - t0;
     totalInferences += 1;
-    return json;
+    return { ...json, _timings: extractTimings(json, t0) };
   } finally {
     lastUsedAt = Date.now();
   }
@@ -252,7 +279,7 @@ export async function inferStream(body, { maxTokens, prefill } = {}, onDelta = (
     lastUsedAt = Date.now();
     const text = out?.choices?.[0]?.message?.content ?? "";
     if (text) onDelta(text);
-    return out;
+    return { ...out, _timings: out._timings || extractTimings(out, t0) };
   }
   const base = await ensureModel();
   const t0 = performance.now();
@@ -294,6 +321,7 @@ export async function inferStream(body, { maxTokens, prefill } = {}, onDelta = (
     let buffer = "";
     let content = "";
     let finishReason = "stop";
+    let firstDeltaMs = null; // #68: time-to-first-token on the warm prefix
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
@@ -308,7 +336,10 @@ export async function inferStream(body, { maxTokens, prefill } = {}, onDelta = (
           let obj;
           try { obj = JSON.parse(data); } catch { continue; }
           const delta = obj?.choices?.[0]?.delta?.content ?? "";
-          if (delta) { content += delta; onDelta(delta); }
+          if (delta) {
+            if (firstDeltaMs === null) firstDeltaMs = performance.now() - t0;
+            content += delta; onDelta(delta);
+          }
           if (obj?.choices?.[0]?.finish_reason) finishReason = obj.choices[0].finish_reason;
         }
       }
@@ -321,6 +352,7 @@ export async function inferStream(body, { maxTokens, prefill } = {}, onDelta = (
       created: Math.floor(Date.now() / 1000),
       model: payload.model || config.model,
       choices: [{ index: 0, finish_reason: finishReason, message: { role: "assistant", content } }],
+      _timings: { ...extractTimings({}, t0), ttft_ms: firstDeltaMs ?? null },
     };
   } finally {
     lastUsedAt = Date.now();

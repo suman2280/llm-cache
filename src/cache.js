@@ -478,7 +478,12 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
     // The chat path serves it labelled and uncached.
     requireGrounded,
   };
-  const timings = { embed_ms: null, redis_ms: null, infer_ms: null };
+  const timings = {
+    embed_ms: null, redis_ms: null, infer_ms: null,
+    // #68: prefill/decode + token counts, when the upstream reports them.
+    ttft_ms: null, prompt_eval_ms: null, eval_ms: null,
+    prompt_tokens: null, completion_tokens: null, cached_tokens: null,
+  };
 
   // #66: one outcome row per request, for bounded-cardinality breakdowns.
   const noteOutcome = (status, savedTokens = 0, latency = performance.now() - started) => {
@@ -881,6 +886,9 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
         }
       }
       payload = generated ? JSON.parse(JSON.stringify(generated)) : generated;
+      // #68: carry prefill/decode + token metadata (if the upstream supplied
+      // it) into the event and headers, without changing the response body.
+      if (payload?._timings) Object.assign(timings, payload._timings);
       if (config.answerPrefill) {
         const text = assembleAnswer(PREFILL, payload?.choices?.[0]?.message?.content);
         payload = {
@@ -1020,6 +1028,10 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
     latency_ms: round1(latency), similarity: null, threshold: config.distanceThreshold,
     prompt, response: answerText(payload), tier: "miss",
     embed_ms: timings.embed_ms, redis_ms: timings.redis_ms, infer_ms: timings.infer_ms,
+    // #68: prefill/decode + token metadata (null unless upstream reported it).
+    ttft_ms: timings.ttft_ms, prompt_eval_ms: timings.prompt_eval_ms, eval_ms: timings.eval_ms,
+    prompt_tokens: timings.prompt_tokens, completion_tokens: timings.completion_tokens,
+    cached_tokens: timings.cached_tokens,
     reason: failure?.kind === "ungrounded"
       ? `not cached: ${failure.reason}`
       : (groundingUsed ? `grounded on ${groundingUsed} reference chunk(s)` : null),
@@ -1044,6 +1056,10 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
       "x-cache-latency-ms": round1(latency).toFixed(1),
       "x-embed-ms": timings.embed_ms != null ? String(timings.embed_ms) : "",
       "x-redis-ms": timings.redis_ms != null ? String(timings.redis_ms) : "",
+      // #68: TTFT / prefill timing (additive; empty when unavailable).
+      "x-cache-ttft-ms": timings.ttft_ms != null ? String(timings.ttft_ms) : "",
+      "x-cache-prompt-eval-ms": timings.prompt_eval_ms != null ? String(timings.prompt_eval_ms) : "",
+      "x-cache-cached-tokens": timings.cached_tokens != null ? String(timings.cached_tokens) : "",
       "x-cache-policy": ctx.outOfDomain
         ? "out-of-domain"
         : (failure?.kind === "ungrounded"
@@ -1142,10 +1158,24 @@ export function statsPayload({ breakdownDim } = {}) {
     response: e.response, source_prompt: e.source_prompt, reason: e.reason,
     request_id: e.request_id ?? null,
     reranker_score: e.reranker_score ?? null,
+    ttft_ms: e.ttft_ms ?? null, prompt_eval_ms: e.prompt_eval_ms ?? null,
+    eval_ms: e.eval_ms ?? null, prompt_tokens: e.prompt_tokens ?? null,
+    completion_tokens: e.completion_tokens ?? null, cached_tokens: e.cached_tokens ?? null,
   }));
   const lat = events.map((e) => Number(e.latency_ms)).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
   const requests = counters.requests || 0;
   const hits = (counters.exact_hits || 0) + (counters.semantic_hits || 0);
+  // #68: "inference avoided" expressed two ways. Cold = mean wall time of a
+  // real miss in the window; warm-prefix savings are reported via TTFT /
+  // cached_tokens on miss events (not fabricated here).
+  const missLats = events.filter((e) => e.status === "miss")
+    .map((e) => Number(e.infer_ms)).filter((v) => Number.isFinite(v));
+  const meanMissMs = missLats.length ? missLats.reduce((a, b) => a + b, 0) / missLats.length : 0;
+  const promptCache = {
+    enabled: Boolean(config.modelCachePrompt),
+    idle_s: config.modelIdleS,
+    note: "warm-prefix TTFT / cached_tokens reported on miss events when upstream provides them",
+  };
 
   return {
     schema_version: 3,
@@ -1175,6 +1205,8 @@ export function statsPayload({ breakdownDim } = {}) {
       },
       store_breaker: storeBreaker.describe(),
       cache_entries: db().countEntries(),
+      // #68: prefix-cache configuration + warm-vs-cold framing.
+      prompt_cache: promptCache,
       // #63: last cache-warming run (null until one runs).
       last_warm: db().getMeta("last_warm"),
       embedder_loaded: isLoaded(),
@@ -1197,6 +1229,8 @@ export function statsPayload({ breakdownDim } = {}) {
       negative_hits: counters.negative_hits || 0,
       negative_entries: counters.negative_entries || 0,
       reranker_rejections: counters.reranker_rejections || 0,
+      // #68: an ESTIMATE of model time avoided (hits * mean-miss infer time).
+      estimated_inference_ms_saved: Math.round(hits * meanMissMs),
       // #66: cost saved is tokens_saved * price-per-token. Still an estimate.
       cost_saved_usd: Number(((counters.tokens_saved || 0) * config.costPerTokenUsd).toFixed(6)),
       cache_hit_rate: requests ? Number((hits / requests).toFixed(4)) : null,

@@ -45,6 +45,7 @@ async function main() {
   console.log(`[app] dashboard  http://${config.host}:${config.port}/dashboard/`);
   console.log(`[app] stats      http://${config.host}:${config.port}/stats`);
   console.log(`[app] model      ${config.model} via ${config.upstreamUrl} (idle unload ${config.modelIdleS}s)`);
+  console.log(`[app] prefix cache ${config.modelCachePrompt ? "on (--cache-prompt)" : "off"}`);
   console.log(`[app] sqlite     ${config.dbPath}`);
   console.log(`[app] model is NOT loaded and the embedder is NOT loaded -- both are lazy`);
   if (!isUp()) console.warn(`[app] redis is not up at ${config.redisUrl}; the semantic tier will degrade`);

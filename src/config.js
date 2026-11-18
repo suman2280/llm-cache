@@ -53,6 +53,9 @@ export const config = {
   // specific.
   modelCtx: envInt("MODEL_CTX", 2048),
   modelThreads: envInt("MODEL_THREADS", 12),
+  // #68: llama.cpp --cache-prompt reuses the KV cache of a matching prompt
+  // prefix (the shared system prompt + RAG preamble) across requests. 0 = off.
+  modelCachePrompt: envBool("MODEL_CACHE_PROMPT", true),
 
   // ---- redis (vector index for the semantic tier) ----------------------
   redisUrl: env("REDIS_URL", "redis://127.0.0.1:6379/0"),

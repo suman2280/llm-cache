@@ -75,7 +75,13 @@ CREATE TABLE IF NOT EXISTS events (
   tier         TEXT,
   verified     INTEGER,
   request_id   TEXT,
-  reranker_score REAL
+  reranker_score REAL,
+  ttft_ms      REAL,
+  prompt_eval_ms REAL,
+  eval_ms      REAL,
+  prompt_tokens INTEGER,
+  completion_tokens INTEGER,
+  cached_tokens INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(id DESC);
 
@@ -149,6 +155,12 @@ export class Store {
     }
     if (!cols().includes("reranker_score")) {
       this.db.exec("ALTER TABLE events ADD COLUMN reranker_score REAL");
+    }
+    for (const [name, def] of [
+      ["ttft_ms", "REAL"], ["prompt_eval_ms", "REAL"], ["eval_ms", "REAL"],
+      ["prompt_tokens", "INTEGER"], ["completion_tokens", "INTEGER"], ["cached_tokens", "INTEGER"],
+    ]) {
+      if (!cols().includes(name)) this.db.exec(`ALTER TABLE events ADD COLUMN ${name} ${def}`);
     }
   }
 
@@ -314,10 +326,17 @@ export class Store {
     const r = this.db.prepare(`
       INSERT INTO events
         (ts,status,model,similarity,threshold,latency_ms,embed_ms,redis_ms,infer_ms,
-         prompt,response,source_prompt,reason,tier,verified,request_id,reranker_score)
+         prompt,response,source_prompt,reason,tier,verified,request_id,reranker_score,
+         ttft_ms,prompt_eval_ms,eval_ms,prompt_tokens,completion_tokens,cached_tokens)
       VALUES (@ts,@status,@model,@similarity,@threshold,@latency_ms,@embed_ms,@redis_ms,
-              @infer_ms,@prompt,@response,@source_prompt,@reason,@tier,@verified,@request_id,@reranker_score)
-    `).run({ request_id: null, reranker_score: null, ...evt });
+              @infer_ms,@prompt,@response,@source_prompt,@reason,@tier,@verified,@request_id,@reranker_score,
+              @ttft_ms,@prompt_eval_ms,@eval_ms,@prompt_tokens,@completion_tokens,@cached_tokens)
+    `).run({
+      request_id: null, reranker_score: null,
+      ttft_ms: null, prompt_eval_ms: null, eval_ms: null,
+      prompt_tokens: null, completion_tokens: null, cached_tokens: null,
+      ...evt,
+    });
     return Number(r.lastInsertRowid);
   }
 
