@@ -391,10 +391,12 @@ function deterministicTier(envelope) {
 // The main entry point
 
 export async function handleChat(body, { envelopeHeader = "", role = "author", maxTokens,
-  requireGrounded = false, trusted = false, clientId = "local", requestId } = {}) {
+  requireGrounded = false, trusted = false, clientId = "local", requestId, streamDelta } = {}) {
   const started = performance.now();
   // #66: a trace id minted by the HTTP layer (or here for direct callers).
   const rid = requestId || `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  // #62: streaming is opt-in via stream=true with a delta sink.
+  const wantStream = Boolean(body?.stream && typeof streamDelta === "function");
   // #41: normalize answer-affecting params before keying and inference, so a
   // huge max_tokens cannot bypass the ceiling by being hashed verbatim.
   if (body && typeof body === "object" && body.max_tokens !== undefined) {
@@ -452,6 +454,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
     } catch { /* never let observability fail a response */ }
   };
 
+
   const reject = async (status, reason) => {
     const latency = performance.now() - started;
     db().recordEvent({
@@ -471,16 +474,10 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   if (!Array.isArray(body?.messages) || body.messages.length === 0) {
     return reject("error", "no messages in request body");
   }
-  if (body.stream) {
-    // Non-streaming only. Say so clearly rather than silently buffering.
-    db().recordEvent({
-      ts: new Date().toISOString(), status: "bypass", model: body.model, request_id: rid,
-      latency_ms: round1(performance.now() - started), prompt,
-      reason: "stream=true is not supported by the cache; send stream=false", tier: "guard",
-    });
-    db().increment(["requests", "bypasses"]);
-    noteOutcome("bypass");
-    const err = new Error("stream=true is not supported by the cache; send stream=false");
+  // #62: stream=true is now supported when the caller supplies streamDelta.
+  // Direct callers without a stream sink still get a clear error.
+  if (body.stream && !wantStream) {
+    const err = new Error("stream=true requires a streaming-capable transport");
     err.statusCode = 400;
     err.public = true;
     throw err;
@@ -803,19 +800,27 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
 
       // Join an in-flight generation for the same request instead of running
       // a second inference. This dedups the burst that --parallel 1 would
-      // otherwise queue for minutes.
-      const existing = inFlight.get(fingerprint);
+      // otherwise queue for minutes. Streaming requests run their own stream
+      // (each owns its delta sink) and bypass the shared single-flight job.
+      const existing = wantStream ? null : inFlight.get(fingerprint);
       let generated;
       if (existing) {
         generated = await existing;
       } else {
-        const job = (async () => model.infer(reqBody, {
+        const inferOpts = {
           maxTokens: boundedTokens(maxTokens),
           prefill: config.answerPrefill ? PREFILL : null,
-        }))();
-        inFlight.set(fingerprint, job);
-        try { generated = await job; }
-        finally { inFlight.delete(fingerprint); }
+        };
+        const job = wantStream
+          ? model.inferStream(reqBody, inferOpts, streamDelta)
+          : model.infer(reqBody, inferOpts);
+        if (wantStream) {
+          generated = await job; // each streaming caller owns its delta sink
+        } else {
+          inFlight.set(fingerprint, job);
+          try { generated = await job; }
+          finally { inFlight.delete(fingerprint); }
+        }
       }
       payload = generated ? JSON.parse(JSON.stringify(generated)) : generated;
       if (config.answerPrefill) {

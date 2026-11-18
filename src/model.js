@@ -236,6 +236,97 @@ export async function infer(body, { maxTokens, prefill } = {}) {
   }
 }
 
+/**
+ * #62: stream inference from the upstream (OpenAI-compatible SSE), invoking
+ * `onDelta(text)` for each content delta. Returns a normal completion object
+ * whose message content is the accumulated text, so the caller can run the
+ * same degeneracy/grounding checks and cache write-back as the non-streaming
+ * path. Accounters are updated once, on completion.
+ */
+export async function inferStream(body, { maxTokens, prefill } = {}, onDelta = () => {}) {
+  if (_inferForTests) {
+    const t0 = performance.now();
+    const out = await _inferForTests(body, { maxTokens, prefill });
+    totalInferMs += performance.now() - t0;
+    totalInferences += 1;
+    lastUsedAt = Date.now();
+    const text = out?.choices?.[0]?.message?.content ?? "";
+    if (text) onDelta(text);
+    return out;
+  }
+  const base = await ensureModel();
+  const t0 = performance.now();
+  const payload = { ...body, stream: true };
+  const ceiling = config.maxAnswerTokens * 2;
+  const requested = Number(payload.max_tokens ?? maxTokens ?? 0);
+  if (requested > 0) payload.max_tokens = Math.min(requested, ceiling);
+  const sampler = {
+    frequency_penalty: config.frequencyPenalty,
+    presence_penalty: config.presencePenalty,
+    repeat_penalty: config.repeatPenalty,
+    dry_multiplier: config.dryMultiplier,
+    dry_base: config.dryBase,
+    dry_allowed_length: config.dryAllowedLength,
+    dry_penalty_last_n: config.dryPenaltyLastN,
+  };
+  for (const [k, v] of Object.entries(sampler)) if (payload[k] === undefined) payload[k] = v;
+  if (prefill) {
+    payload.messages = [...(Array.isArray(payload.messages) ? payload.messages : []),
+      { role: "assistant", content: prefill }];
+    payload.continue_final_message = true;
+    payload.add_generation_prompt = false;
+  }
+
+  try {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.upstreamKey}` },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(config.modelTimeoutMs),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`upstream ${res.status}: ${text.slice(0, 300)}`);
+    }
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error("upstream returned no stream body");
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let content = "";
+    let finishReason = "stop";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const frames = buffer.split("\n\n");
+      buffer = frames.pop() ?? "";
+      for (const frame of frames) {
+        for (const line of frame.split("\n")) {
+          if (!line.startsWith("data:")) continue;
+          const data = line.slice(5).trim();
+          if (!data || data === "[DONE]") continue;
+          let obj;
+          try { obj = JSON.parse(data); } catch { continue; }
+          const delta = obj?.choices?.[0]?.delta?.content ?? "";
+          if (delta) { content += delta; onDelta(delta); }
+          if (obj?.choices?.[0]?.finish_reason) finishReason = obj.choices[0].finish_reason;
+        }
+      }
+    }
+    totalInferMs += performance.now() - t0;
+    totalInferences += 1;
+    return {
+      id: `stream-${Date.now().toString(36)}`,
+      object: "chat.completion",
+      created: Math.floor(Date.now() / 1000),
+      model: payload.model || config.model,
+      choices: [{ index: 0, finish_reason: finishReason, message: { role: "assistant", content } }],
+    };
+  } finally {
+    lastUsedAt = Date.now();
+  }
+}
+
 export async function shutdown() {
   if (idleTimer) { clearInterval(idleTimer); idleTimer = null; }
   if (!proc) { state = "stopped"; return; }

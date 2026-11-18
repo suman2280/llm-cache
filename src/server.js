@@ -126,11 +126,47 @@ export async function build() {
     const trusted = adminOk(req);
     const role = trusted ? "author" : "consumer";
     const clientId = String(req.ip || req.socket?.remoteAddress || "local");
+    const opts = { envelopeHeader, role, maxTokens: req.body?.max_tokens,
+      trusted, clientId, requestId: req.requestId };
     try {
-      const out = await cache.handleChat(req.body, {
-        envelopeHeader, role, maxTokens: req.body?.max_tokens,
-        trusted, clientId, requestId: req.requestId,
-      });
+      if (req.body?.stream) {
+        // #62: stream=true returns text/event-stream. Deltas are buffered while
+        // the cache/guard/verifier/infer path runs, then headers (with the real
+        // X-Cache-* verdict) are written before the first chunk. A streamed
+        // miss still goes through grounding + degeneracy checks + cache
+        // write-back because it is the same handleChat path.
+        const deltas = [];
+        const out = await cache.handleChat(req.body, {
+          ...opts, streamDelta: (t) => { if (t) deltas.push(t); },
+        });
+        const answer = out.response?.choices?.[0]?.message?.content
+          ?? deltas.join("") ?? "";
+        const id = out.response?.id || `chatcmpl-${req.requestId}`;
+        const model = out.response?.model || config.model;
+        reply.hijack();
+        reply.raw.writeHead(200, {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+          ...out.headers,
+          "x-request-id": req.requestId,
+        });
+        const chunks = answer ? answer.match(/(\S+\s*)/g) || [answer] : [];
+        for (const chunk of chunks) {
+          reply.raw.write(`data: ${JSON.stringify({
+            id, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model,
+            choices: [{ index: 0, delta: { content: chunk }, finish_reason: null }],
+          })}\n\n`);
+        }
+        reply.raw.write(`data: ${JSON.stringify({
+          id, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model,
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+        })}\n\n`);
+        reply.raw.write("data: [DONE]\n\n");
+        reply.raw.end();
+        return;
+      }
+      const out = await cache.handleChat(req.body, opts);
       reply.headers(out.headers);
       return out.response;
     } catch (err) {
