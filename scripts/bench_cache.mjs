@@ -20,6 +20,12 @@ const rerankFlag = process.argv.find((a) => a.startsWith("--reranker="))?.split(
 if (rerankFlag === "on") config.verifierReranker = "onnx";
 if (rerankFlag === "off") config.verifierReranker = "off";
 
+// #67: `--embedder=<model> --dim=<n>` compares two embedders on the same set.
+const embedderFlag = process.argv.find((a) => a.startsWith("--embedder="))?.split("=")[1];
+const dimFlag = process.argv.find((a) => a.startsWith("--dim="))?.split("=")[1];
+if (embedderFlag) config.embedderModel = embedderFlag;
+if (dimFlag) config.vectorDim = Number(dimFlag);
+
 // (query, cached question, should hit)
 const CASES = [
   // --- should hit: rewordings of the same question -----------------------
@@ -148,6 +154,7 @@ async function runOrigin(origin, n) {
 
 const N = 20;
 console.log(`Cache verifier benchmark — ${CASES.length} labelled pairs, fixed topK=3`);
+console.log(`Embedder: ${config.embedderModel} (dim ${config.vectorDim})`);
 console.log(`Reranker: ${config.verifierReranker === "off" ? "OFF" : `ON (${config.verifierReranker}, threshold ${config.rerankerThreshold})`}`);
 console.log("=".repeat(70));
 

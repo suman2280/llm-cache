@@ -19,7 +19,7 @@ import { invalidateVectorCache } from "./cache.js";
 import * as model from "./model.js";
 import * as templates from "./templates.js";
 import { encodeEnvelope, asciiHeaderValue, parseEnvelope, scopeOf } from "./keying.js";
-import { isLoaded as embedderLoaded } from "./embedder.js";
+import { isLoaded as embedderLoaded, embedderInfo } from "./embedder.js";
 import { retrieve } from "./knowledge.js";
 
 function hash(v) { return createHash("sha256").update(v, "utf8").digest("hex").slice(0, 12); }
@@ -322,7 +322,7 @@ export async function build() {
     status: "ok",
     checks: {
       model: model.modelStats(),
-      embedder: { loaded: embedderLoaded(), model: config.embedderModel },
+      embedder: embedderInfo(),
       redis: { up: vectors.isUp() },
       sqlite: { entries: db().countEntries() },
     },

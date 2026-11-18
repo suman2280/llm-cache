@@ -25,7 +25,9 @@ async function main() {
   // cannot be served (or leak into its neighbours) after a restart.
   const purged = await purgeDegenerateEntries();
   if (purged) console.log(`[app] evicted ${purged} degenerate cached answer(s)`);
-  const { ensureIndex, isUp } = await import("./vectors.js");
+  const { ensureIndex, isUp, checkIndexIdentity } = await import("./vectors.js");
+  const identity = checkIndexIdentity(); // #67: fails loudly on embedder/index mismatch
+  if (identity.fresh) console.log(`[cache] recorded embedder identity ${identity.model || config.embedderModel} (dim ${config.vectorDim})`);
   try { await ensureIndex(); } catch (e) { console.warn(`[redis] unavailable: ${e.message}`); }
 
   // #59: configure the limiter BEFORE listen(), so the first burst is capped.

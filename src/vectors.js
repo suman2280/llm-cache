@@ -16,6 +16,40 @@
 
 import { createClient } from "redis";
 import config from "./config.js";
+import { getStore as db } from "./store.js";
+import { embedderInfo } from "./embedder.js";
+
+/**
+ * #67: detect an embedder/index mismatch on startup and fail loudly instead
+ * of writing vectors of the wrong width or mixing two models' vectors.
+ */
+export function checkIndexIdentity() {
+  const info = embedderInfo();
+  const store = db();
+  const storedDim = store.getMeta("vector_index_dim");
+  const storedModel = store.getMeta("vector_index_model");
+  if (!storedDim && !storedModel) { recordIndexIdentity(); return { ok: true, fresh: true, model: info.id, dim: info.dim }; }
+  if (storedDim && Number(storedDim) !== info.dim) {
+    throw new Error(
+      `Vector index dimension mismatch: index was built with ${storedDim}-dim vectors ` +
+      `but EMBEDDER_MODEL '${info.id}' / VECTOR_DIM=${info.dim}. Set VECTOR_DIM=${storedDim} ` +
+      `or run node scripts/reindex_vectors.mjs to rebuild the index for the new model.`
+    );
+  }
+  if (storedModel && storedModel !== info.id) {
+    throw new Error(
+      `Embedder model changed from '${storedModel}' to '${info.id}'. Run ` +
+      `node scripts/reindex_vectors.mjs before serving, or set EMBEDDER_MODEL='${storedModel}'.`
+    );
+  }
+  return { ok: true, fresh: false, model: info.id, dim: info.dim };
+}
+
+export function recordIndexIdentity() {
+  const info = embedderInfo();
+  db().setMeta("vector_index_dim", String(info.dim));
+  db().setMeta("vector_index_model", info.id);
+}
 
 let client = null;
 let connecting = null;

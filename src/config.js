@@ -173,6 +173,7 @@ export const config = {
 
   // ---- embedder (lazy) --------------------------------------------------
   embedderModel: env("EMBEDDER_MODEL", "Xenova/all-MiniLM-L6-v2"),
+  embedderProvider: env("EMBEDDER_PROVIDER", "transformers"),
   embedderIdleS: envInt("EMBEDDER_IDLE_S", 300),
 
   allowSeed: envBool("ALLOW_SEED", false),

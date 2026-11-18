@@ -16,6 +16,33 @@ let loading = null;
 let lastUsedAt = 0;
 let unloadTimer = null;
 
+/**
+ * #67: the embedder is selected by config. `id` is the provenance stamp, `dim`
+ * is the vector index width. A swapped model MUST be paired with a reindex.
+ */
+export function embedderInfo() {
+  return {
+    provider: config.embedderProvider || "transformers",
+    id: config.embedderModel,
+    model: config.embedderModel,
+    dim: config.vectorDim,
+    loaded: extractor !== null,
+  };
+}
+
+/** Fail loudly on a dimension mismatch instead of indexing garbage vectors. */
+function assertDim(vec) {
+  const want = config.vectorDim;
+  if (vec.length !== want) {
+    throw new Error(
+      `Embedding dimension mismatch: model '${config.embedderModel}' produced ${vec.length} ` +
+      `dimensions but VECTOR_DIM=${want}. Set VECTOR_DIM=${vec.length} and run ` +
+      `node scripts/reindex_vectors.mjs to rebuild the vector index.`
+    );
+  }
+  return vec;
+}
+
 async function load() {
   if (extractor) return extractor;
   if (loading) return loading;
@@ -35,12 +62,22 @@ let _embedForTests = null;
 export function setEmbedForTests(fn) { _embedForTests = fn; }
 
 export async function embed(text) {
-  if (_embedForTests) return _embedForTests(text);
+  // Test stubs bypass the model but still honour the dimension contract.
+  if (_embedForTests) {
+    const v = await _embedForTests(text);
+    return v ? assertDim(v) : v;
+  }
   if (!text || !text.trim()) return null;
+  const provider = config.embedderProvider || "transformers";
+  if (provider !== "transformers") {
+    throw new Error(
+      `Unknown EMBEDDER_PROVIDER='${provider}'. Supported: transformers.`
+    );
+  }
   const p = await load();
   lastUsedAt = Date.now();
   const out = await p(text, { pooling: "mean", normalize: true });
-  return Array.from(out.data);
+  return assertDim(Array.from(out.data));
 }
 
 export function isLoaded() { return extractor !== null; }

@@ -30,7 +30,7 @@
 import config from "./config.js";
 import { getStore as db } from "./store.js";
 import * as vectors from "./vectors.js";
-import { embed, isLoaded } from "./embedder.js";
+import { embed, isLoaded, embedderInfo } from "./embedder.js";
 import * as model from "./model.js";
 import * as templates from "./templates.js";
 import { DomainPolicy, OPEN_POLICY } from "./domain.js";
@@ -563,7 +563,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
         db().increment(["requests", "bypasses", "out_of_domain"]);
         noteOutcome("out-of-domain", 0, latency);
         db().increment("negative_entries");
-        rememberNegative(prompt || semText, "out-of-domain", domain.reason).catch(() => {});
+        await rememberNegative(prompt || semText, "out-of-domain", domain.reason).catch(() => {});
         throw domainRefusalError(policy, domain.reason);
       }
       // mode === "bypass": fall through to inference, but never cache it.
@@ -1030,7 +1030,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   // refusal -- the question still needs an answer).
   if (failure?.kind === "ungrounded" && config.negativeCacheTtlS > 0) {
     db().increment("negative_entries");
-    rememberNegative(prompt || semText, "ungrounded", failure.reason).catch(() => {});
+    await rememberNegative(prompt || semText, "ungrounded", failure.reason).catch(() => {});
   }
   if (ctx.outOfDomain) db().increment(["out_of_domain"]);
 
@@ -1156,6 +1156,10 @@ export function statsPayload({ breakdownDim } = {}) {
       uptime_s: Math.round(process.uptime()),
       model: config.model,
       embedder: config.embedderModel,
+      // #67: additive embedder identity/dimension for provenance + migration.
+      embedder_id: embedderInfo().id,
+      embedder_dim: embedderInfo().dim,
+      embedder_provider: embedderInfo().provider,
       distance_threshold: config.distanceThreshold,
       ttl_s: config.cacheTtlS || null,
       // additive: the frozen UI ignores fields it does not read
