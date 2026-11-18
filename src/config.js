@@ -35,6 +35,9 @@ export const config = {
   upstreamKey: env("UPSTREAM_KEY", "local-dev-key"),
   model: env("MODEL_ID", "qwen2.5-7b-instruct"),
   modelTimeoutMs: envInt("MODEL_TIMEOUT_MS", 300_000),
+  // A transient "fetch failed" (model recycled mid-request) is retried after a
+  // fresh health check / respawn. 2 retries = up to 3 attempts.
+  modelFetchRetries: envInt("MODEL_FETCH_RETRIES", 2),
 
   // The model supervisor: spawn on a real miss, kill after N idle seconds.
   // modelIdleS = 0 unloads immediately (max memory saving, every miss pays

@@ -26,8 +26,54 @@ let idleTimer = null;
 let spawns = 0;
 let totalInferMs = 0;
 let totalInferences = 0;
+// #race: the idle timer must never kill the model while a request is using it,
+// and a shutdown in progress must be awaited before spawning a replacement.
+let activeInferences = 0;
+let stoppingPromise = null;
+// Test seam: replace ensureModel / fetch so the retry path is testable offline.
+let _deps = null;
+export function setModelDepsForTests(deps) { _deps = deps; }
+export function clearModelDepsForTests() { _deps = null; }
+const getBase = () => (_deps?.ensureModel ? _deps.ensureModel() : ensureModel());
+const fetchImpl = (url, init) => (_deps?.fetch ? _deps.fetch(url, init) : fetch(url, init));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Network-level fetch failures (dead socket after the model was recycled). */
+function isNetworkError(err) {
+  if (!err) return false;
+  if (err instanceof TypeError) return true; // fetch wraps network errors in TypeError
+  const code = err.cause?.code || err.code;
+  if (["ECONNREFUSED", "ECONNRESET", "EPIPE", "ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET"].includes(code)) return true;
+  return /fetch failed|socket hang up|network|terminated/i.test(String(err.message));
+}
+
+/**
+ * Fetch the upstream with retry on network failure. Each attempt re-runs
+ * ensureModel(): if the process died, healthy() fails and a fresh one spawns;
+ * concurrent callers join the single startingPromise (no double spawn).
+ */
+async function fetchWithRetry(path, makeInit) {
+  const attempts = 1 + Math.max(0, config.modelFetchRetries || 0);
+  let lastErr;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const base = await getBase();
+    let res;
+    try {
+      res = await fetchImpl(`${base}${path}`, makeInit());
+    } catch (err) {
+      lastErr = err;
+      if (!isNetworkError(err) || attempt === attempts - 1) throw err;
+      console.warn(`[model] upstream unreachable (attempt ${attempt + 1}/${attempts}): ${err.message}; re-checking model`);
+      // Mark this process unusable so the next ensureModel() spawns a fresh one.
+      state = "stopped";
+      proc = null;
+      continue;
+    }
+    return res;
+  }
+  throw lastErr;
+}
 
 /** #68: exported so spawn args (incl. prefix caching) are testable. */
 export function defaultCmd() {
@@ -144,6 +190,12 @@ async function startModel() {
 }
 
 export async function ensureModel() {
+  // A shutdown in progress means the current process is being SIGTERM'd. It can
+  // still answer /health for a moment, so never accept it -- wait for the kill
+  // to finish, then proceed to a clean spawn.
+  if (stoppingPromise) {
+    try { await stoppingPromise; } catch { /* shutdown is best-effort */ }
+  }
   if (state === "running" && proc) {
     lastUsedAt = Date.now();
     return config.upstreamUrl;
@@ -207,7 +259,7 @@ export async function infer(body, { maxTokens, prefill } = {}) {
     lastUsedAt = Date.now();
     return { ...out, _timings: out._timings || extractTimings(out, t0) };
   }
-  const base = await ensureModel();
+  activeInferences += 1;
   const t0 = performance.now();
   const payload = { ...body };
   // #41: clamp ALWAYS. The old fallback only applied when the caller omitted
@@ -240,7 +292,7 @@ export async function infer(body, { maxTokens, prefill } = {}) {
     payload.add_generation_prompt = false;
   }
   try {
-    const res = await fetch(`${base}/v1/chat/completions`, {
+    const makeInit = () => ({
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -249,6 +301,7 @@ export async function infer(body, { maxTokens, prefill } = {}) {
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(config.modelTimeoutMs),
     });
+    const res = await fetchWithRetry("/v1/chat/completions", makeInit);
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new Error(`upstream ${res.status}: ${text.slice(0, 300)}`);
@@ -258,6 +311,7 @@ export async function infer(body, { maxTokens, prefill } = {}) {
     totalInferences += 1;
     return { ...json, _timings: extractTimings(json, t0) };
   } finally {
+    activeInferences -= 1;
     lastUsedAt = Date.now();
   }
 }
@@ -282,7 +336,7 @@ export async function inferStream(body, { maxTokens, prefill } = {}, onDelta = (
     if (text) onDelta(text);
     return { ...out, _timings: out._timings || extractTimings(out, t0) };
   }
-  const base = await ensureModel();
+  activeInferences += 1;
   const t0 = performance.now();
   const payload = { ...body, stream: true };
   const ceiling = config.maxAnswerTokens * 2;
@@ -306,12 +360,13 @@ export async function inferStream(body, { maxTokens, prefill } = {}, onDelta = (
   }
 
   try {
-    const res = await fetch(`${base}/v1/chat/completions`, {
+    const makeInit = () => ({
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.upstreamKey}` },
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(config.modelTimeoutMs),
     });
+    const res = await fetchWithRetry("/v1/chat/completions", makeInit);
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new Error(`upstream ${res.status}: ${text.slice(0, 300)}`);
@@ -356,23 +411,29 @@ export async function inferStream(body, { maxTokens, prefill } = {}, onDelta = (
       _timings: { ...extractTimings({}, t0), ttft_ms: firstDeltaMs ?? null },
     };
   } finally {
+    activeInferences -= 1;
     lastUsedAt = Date.now();
   }
 }
 
 export async function shutdown() {
+  if (stoppingPromise) return stoppingPromise;
   if (idleTimer) { clearInterval(idleTimer); idleTimer = null; }
   if (!proc) { state = "stopped"; return; }
   state = "stopping";
   const p = proc;
   proc = null;
-  await new Promise((resolve) => {
-    const done = () => resolve();
-    p.once("exit", done);
-    p.kill("SIGTERM");
-    setTimeout(() => { try { p.kill("SIGKILL"); } catch {} done(); }, 8000).unref?.();
-  });
-  state = "stopped";
+  stoppingPromise = (async () => {
+    await new Promise((resolve) => {
+      const done = () => resolve();
+      p.once("exit", done);
+      p.kill("SIGTERM");
+      setTimeout(() => { try { p.kill("SIGKILL"); } catch {} done(); }, 8000).unref?.();
+    });
+    state = "stopped";
+    stoppingPromise = null;
+  })();
+  return stoppingPromise;
 }
 
 function startIdleTimer() {
@@ -380,10 +441,12 @@ function startIdleTimer() {
   idleTimer = setInterval(async () => {
     if (config.modelIdleS === 0) {
       // unload the instant a request finishes
-      if (state === "running" && Date.now() - lastUsedAt > 0) { await shutdown(); console.log("[model] unloaded (idle 0)"); }
+      if (state === "running" && activeInferences === 0 && Date.now() - lastUsedAt > 0) { await shutdown(); console.log("[model] unloaded (idle 0)"); }
       return;
     }
-    if (state === "running" && Date.now() - lastUsedAt > config.modelIdleS * 1000) {
+    // #race: never unload while a request is mid-inference -- killing the child
+    // mid-fetch is exactly what produced the "fetch failed" demo error.
+    if (state === "running" && activeInferences === 0 && Date.now() - lastUsedAt > config.modelIdleS * 1000) {
       await shutdown();
       console.log(`[model] unloaded after ${config.modelIdleS}s idle`);
     }
@@ -400,6 +463,8 @@ export function modelStats() {
     last_used_at: lastUsedAt ? new Date(lastUsedAt).toISOString() : null,
     inferences: totalInferences,
     total_infer_ms: Math.round(totalInferMs),
+    active_inferences: activeInferences,
+    stopping: Boolean(stoppingPromise),
   };
 }
 
