@@ -111,6 +111,12 @@ CREATE TABLE IF NOT EXISTS counters (
   name  TEXT PRIMARY KEY,
   value INTEGER NOT NULL DEFAULT 0
 );
+
+-- #63: small key/value metadata store (last_warm timestamp, etc.).
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT
+);
 `;
 
 const COUNTER_KEYS = [
@@ -387,6 +393,16 @@ export class Store {
     const out = {};
     for (const r of rows) out[r.name] = r.value;
     return out;
+  }
+
+  /** #63: metadata key/value (additive). */
+  setMeta(key, value) {
+    this.db.prepare("INSERT INTO meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+      .run(String(key), String(value));
+  }
+  getMeta(key) {
+    const r = this.db.prepare("SELECT value FROM meta WHERE key = ?").get(String(key));
+    return r ? r.value : null;
   }
 
   /** Clears counters + events; the event id sequence deliberately survives. */

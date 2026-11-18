@@ -151,6 +151,9 @@ export const config = {
   breakdownLimit: envInt("BREAKDOWN_LIMIT", 10),
   // #65: how long a negative (refusal/ungrounded) verdict is remembered, 0=off.
   negativeCacheTtlS: envInt("NEGATIVE_CACHE_TTL_S", 300),
+  // #63: max concurrent in-flight warm generations (bounded so warming does
+  // not starve normal traffic on the single model slot).
+  warmConcurrency: envInt("WARM_CONCURRENCY", 2),
   // #37: declared target false-positive rate. Coverage thresholds are
   // provenance-dependent (see THRESHOLD_BY_ORIGIN in cache.js); the measured
   // operating point comes from scripts/bench_cache.mjs.

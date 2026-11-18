@@ -549,6 +549,20 @@ export async function build() {
    * because leaving them would be misleading -- a hit count for entries that
    * no longer exist reads as a cache that is working when it is empty.
    */
+  /**
+   * #63: warm the cache from a list of queries. Admin-gated: warming drives
+   * model invocations. Dry-run reports would-hit/would-miss without writing.
+   */
+  app.post("/cache/warm", async (req, reply) => {
+    if (!adminOk(req)) return reply.code(404).send({ detail: "not found" });
+    const b = req.body ?? {};
+    const queries = b.queries ?? b.prompts ?? [];
+    if (!Array.isArray(queries)) return reply.code(400).send({ detail: "queries must be an array" });
+    if (queries.length > 1000) return reply.code(400).send({ detail: "at most 1000 queries per call" });
+    const { warmQueries } = await import("./warm.js");
+    return warmQueries(queries, { dryRun: Boolean(b.dry_run ?? b.dryRun), concurrency: b.concurrency });
+  });
+
   app.post("/cache/clear", async (req, reply) => {
     if (!adminOk(req)) return reply.code(404).send({ detail: "not found" });
     const documents = db().countEntries();

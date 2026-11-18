@@ -1147,6 +1147,8 @@ export function statsPayload({ breakdownDim } = {}) {
       },
       store_breaker: storeBreaker.describe(),
       cache_entries: db().countEntries(),
+      // #63: last cache-warming run (null until one runs).
+      last_warm: db().getMeta("last_warm"),
       embedder_loaded: isLoaded(),
       vector_count: undefined,
     },
