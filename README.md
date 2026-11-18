@@ -38,7 +38,7 @@ node scripts/demo_preview.mjs
   with top_k=1           miss               6144.6 ms  different param -> must not be a hit
 
 3. semantic tier — a rewording (the model is still stopped)
-  rewording              semantic-hit         14.1 ms  from: "What is S3 storage classes?"
+  rewording              semantic-hit         14.1 ms  from: "How does S3 server-side encryption work?"
 
 4. miss — the one request that genuinely needs the model
   genuinely new          miss              16429.0 ms
@@ -330,8 +330,7 @@ So:
 
 - the **sampler** is defended — `frequency_penalty`, `presence_penalty`, `repeat_penalty` and
   DRY (llama.cpp's "Don't Repeat Yourself" sampler, designed for exactly this);
-- the **output** is checked (`src/degenerate.js`): a repeated line, a repeated 8-gram, or an
-  repeated line or a repeated 8-gram is degenerate (a missing full stop is NOT — that was a false positive);
+- the **output** is checked (`src/degenerate.js`): a repeated line or a repeated 8-gram is degenerate (a missing full stop is NOT — that was a false positive);
 - a degenerate answer is **retried** once with a hotter sample and a different seed, and if it
   happens again it is **not cached** and the request fails rather than returning garbage;
 - at **startup** the cache is swept for already-degenerate answers and they are evicted — the
@@ -499,7 +498,7 @@ cp .env.example .env      # then edit the paths setup_model.sh printed
 
 # run
 bash scripts/dev.sh --wipe        # restart cleanly (kills whatever owns :8000)
-node scripts/seed_corpus.mjs      # seed 29 Chapter-1 assets
+node scripts/seed_corpus.mjs      # seed 29 Chapter-1 assets (needs ALLOW_SEED=1)
 ```
 
 Then open <http://localhost:8000/dashboard/>.
@@ -556,10 +555,10 @@ The model process appears on a miss and **disappears** 120 s after the last one
 |---|---|
 | `npm start` | serve on :8000 (dashboard at `/dashboard/`) |
 | `npm run demo` | the preview above |
-| `npm run seed` | seed the demonstration corpus |
+| `npm run seed` | seed the demonstration corpus (requires `ALLOW_SEED=1`; `dev.sh` sets it) |
 | `npm run contract` | assert the backend satisfies the frozen UI's contract |
 | `npm run bench:model` | measure the inference layer (throughput, latency, memory, refusal) |
-| `npm test` | 114 tests: domain guard, grounding, lexicon, intents, degenerate answers, knowledge, keying, templates, and audit regressions |
+| `npm test` | all unit tests pass: domain guard, grounding, lexicon, intents, degenerate answers, knowledge, keying, templates, concurrency and audit regressions |
 | `npm run check:dashboard` | every id `app.js` reaches for exists in `index.html` |
 | `node scripts/ui_smoke.mjs` | drive the dashboard in a real Chrome (13 checks) |
 | `node scripts/screenshot.mjs` | capture the dashboard for the docs |
@@ -584,7 +583,7 @@ And in a real browser, against the real backend:
 ```bash
 npx puppeteer browsers install chrome   # once
 node scripts/ui_smoke.mjs
-# 11/11 checks passed
+# all checks pass (13 checks; see the checker output)
 ```
 
 which drives the dashboard's **Run the demo** button through
@@ -633,7 +632,7 @@ to match rather than any shared ancestor.
   dimension or model change is detected at startup and fails loudly; run
   `node scripts/reindex_vectors.mjs` to rebuild the vector index without touching SQLite
   provenance (idempotent, reports progress). Identity and TTFT / cached-token counts are
-  surfaced in `/stats` and `/healthz`.
+  surfaced in `/stats` (identity + TTFT) and `/healthz` (identity).
 - **Prefix caching & trace IDs** — `--cache-prompt` (`MODEL_CACHE_PROMPT`) reuses the KV cache
   of the shared prompt prefix on warm slots; TTFT / prefill timing is reported on miss events
   and headers. Every response carries `x-request-id`, echoed on its event. `/stats?breakdown=scope`

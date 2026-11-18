@@ -95,7 +95,7 @@ test("specific terms exclude stopwords and domain-generic words", () => {
   assert.ok(!terms.has("aws"));
   assert.ok(!terms.has("cloud"));
   assert.ok(!terms.has("service"));
-  assert.ok(terms.has("difference") === false || true); // difference is not generic
+  assert.equal(terms.has("difference"), false, "difference is a framing word, not a specific term");
   assert.ok(terms.has("question") === false);
 });
 

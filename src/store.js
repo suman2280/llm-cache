@@ -49,7 +49,10 @@ CREATE TABLE IF NOT EXISTS cache_entries (
   source_prompt     TEXT,
   created_at        INTEGER NOT NULL,
   last_used_at      INTEGER NOT NULL,
-  hits              INTEGER NOT NULL DEFAULT 0
+  hits              INTEGER NOT NULL DEFAULT 0,
+  -- #69: caller that generated the entry. Lets a consumer reuse its OWN
+  -- unreviewed answer without opening the floor to other actors' drafts.
+  origin_client     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_cache_scope  ON cache_entries(scope);
 CREATE INDEX IF NOT EXISTS idx_cache_model  ON cache_entries(model, scope);
@@ -162,6 +165,10 @@ export class Store {
     ]) {
       if (!cols().includes(name)) this.db.exec(`ALTER TABLE events ADD COLUMN ${name} ${def}`);
     }
+    const entryCols = () => this.db.prepare("PRAGMA table_info(cache_entries)").all().map((r) => r.name);
+    if (!entryCols().includes("origin_client")) {
+      this.db.exec("ALTER TABLE cache_entries ADD COLUMN origin_client TEXT");
+    }
   }
 
   // --------------------------------------------------------------- entries
@@ -227,10 +234,12 @@ export class Store {
       INSERT INTO cache_entries
         (fingerprint, scope, model, semantic_text, prompt, response_json, symbol_fp,
          envelope_json, template_id, params_json, chunk_ids, actual_answer, generation_method,
-         verification_method, review_status, source_prompt, created_at, last_used_at, hits)
+         verification_method, review_status, source_prompt, created_at, last_used_at, hits,
+         origin_client)
       VALUES (@fingerprint,@scope,@model,@semantic_text,@prompt,@response_json,@symbol_fp,
               @envelope_json,@template_id,@params_json,@chunk_ids,@actual_answer,@generation_method,
-              @verification_method,@review_status,@source_prompt,@created_at,@last_used_at,0)
+              @verification_method,@review_status,@source_prompt,@created_at,@last_used_at,0,
+              @origin_client)
       ON CONFLICT(fingerprint) DO UPDATE SET
         -- #30: update EVERY column. A partial update left the new answer
         -- paired with the old scope, prompt, chunk ids and template provenance.
@@ -257,8 +266,9 @@ export class Store {
         -- #48: a regenerated answer is NEW; refreshing created_at keeps it
         -- from being TTL-evicted immediately. hits is preserved.
         created_at      = excluded.created_at,
-        last_used_at    = excluded.last_used_at
-    `).run(entry);
+        last_used_at    = excluded.last_used_at,
+        origin_client   = excluded.origin_client
+    `).run({ origin_client: null, ...entry });
     return r.lastInsertRowid;
   }
 

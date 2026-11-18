@@ -58,9 +58,12 @@ export async function warmQueries(queries, { dryRun = false, concurrency } = {})
       return { index, status: hit ? "hit" : "miss", prompt: body.messages?.at(-1)?.content };
     }
     try {
+      // #72: warming is admin-gated, so the operator is vouching for these
+      // questions -- promote them to 'approved' so a normal consumer can use
+      // them. A SHARED client id means the inference limiter actually applies.
       const out = await handleChat(body, {
         envelopeHeader, role: "author", trusted: true,
-        clientId: `warm:${index}`,
+        clientId: "warm", reviewStatus: "approved",
       });
       return { index, status: out.status === "miss" ? "warmed" : "skipped", cache: out.status };
     } catch (err) {
@@ -76,7 +79,8 @@ export async function warmQueries(queries, { dryRun = false, concurrency } = {})
   for (const r of results) if (r.status in counts) counts[r.status] += 1;
   const invocations = (db().counters().model_invocations || 0) - invBefore;
   const last_warm = new Date().toISOString();
-  db().setMeta("last_warm", last_warm);
+  // #72: a dry run changes nothing, including the last_warm marker.
+  if (!dryRun) db().setMeta("last_warm", last_warm);
   return {
     total: list.length, dryRun,
     warmed: counts.warmed, skipped: counts.skipped, failed: counts.failed,

@@ -90,7 +90,7 @@ three paths are printed for you to paste.
 
 ```bash
 bash scripts/dev.sh --wipe
-node scripts/seed_corpus.mjs
+node scripts/seed_corpus.mjs   # needs ALLOW_SEED=1 (dev.sh sets it)
 ```
 
 `dev.sh` starts Redis if needed, stops whatever owns port 8000, and launches the backend. The
@@ -109,7 +109,7 @@ and killed 120 s after the last one.
 Run these before changing anything:
 
 ```bash
-npm test                                   # 106 unit tests, no services needed
+npm test                                   # all unit tests pass, no services needed
 node scripts/check_api_contract.mjs        # backend must satisfy the dashboard contract
 node scripts/bench_cache.mjs               # verifier recall + FPR, no model needed
 node scripts/ui_smoke.mjs                  # drives the real dashboard in headless Chrome

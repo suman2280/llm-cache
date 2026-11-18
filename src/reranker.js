@@ -13,21 +13,32 @@ import config from "./config.js";
 let extractor = null;
 let loading = null;
 let failed = false;
+let failureReason = null;
 let lastUsedAt = 0;
 let testScorer = null;
+let loaderOverride = null; // test seam: force a deterministic load failure/success
+
+/** Test seam: replace the (lazy) model loader. */
+export function setRerankerLoaderForTests(fn) { loaderOverride = fn; }
+export function clearRerankerLoaderForTests() { loaderOverride = null; failed = false; failureReason = null; }
 
 /** Test seam: replace the scorer with a deterministic stub. */
 export function setRerankerForTests(fn) { testScorer = fn; }
-export function clearRerankerForTests() { testScorer = null; failed = false; }
+export function clearRerankerForTests() { testScorer = null; failed = false; failureReason = null; }
 
 export function rerankerInfo() {
   const mode = config.verifierReranker || "off";
+  const enabled = mode !== "off";
   return {
     mode,
-    enabled: mode !== "off",
+    enabled,
     model: config.rerankerModel,
     threshold: config.rerankerThreshold,
     loaded: extractor !== null,
+    // #75: an enabled-but-unloadable reranker is reported, never silent.
+    failed,
+    failure_reason: failureReason,
+    status: !enabled ? "off" : failed ? "failed" : extractor ? "ready" : loading ? "loading" : "idle",
   };
 }
 
@@ -37,16 +48,24 @@ async function load() {
   if (loading) return loading;
   loading = (async () => {
     try {
-      const { pipeline } = await import("@xenova/transformers");
       const t0 = Date.now();
-      const pipe = await pipeline("text-classification", config.rerankerModel, { quantized: true });
+      let pipe;
+      if (loaderOverride) {
+        pipe = await loaderOverride(config.rerankerModel);
+      } else {
+        const { pipeline } = await import("@xenova/transformers");
+        pipe = await pipeline("text-classification", config.rerankerModel, { quantized: true });
+      }
       extractor = pipe;
+      failed = false;
+      failureReason = null;
       console.log(`[reranker] loaded ${config.rerankerModel} in ${Date.now() - t0} ms`);
       return pipe;
     } catch (err) {
-      // Fail OPEN: an unavailable optional reranker must not break serving.
+      // Fail OPEN, but RECORD it so /stats (/healthz) and startup logs show why.
       failed = true;
-      console.warn(`[reranker] unavailable (${err.message}); verification continues without it`);
+      failureReason = `${err.message}`;
+      console.warn(`[reranker] unavailable (${failureReason}); verification continues without it`);
       return null;
     } finally {
       loading = null;

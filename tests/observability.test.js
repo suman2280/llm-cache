@@ -125,13 +125,28 @@ test("#66 store records per-dimension breakdowns and cost saved", async (t) => {
   await app.close();
 });
 
-test("#66 statsPayload exposes additive observability fields", () => {
+test("#66 observability fields carry concrete, consistent values (#79)", async () => {
   setup();
   try {
-    const before = statsPayload();
-    assert.ok(before.breakdown && Array.isArray(before.breakdown.scope));
-    assert.ok("cost_saved_usd" in before.totals);
-    assert.ok("request_id" in before);
+    const app = await build();
+    const env = Buffer.from(JSON.stringify({ chapter_code: "AWS", concept_id: "C-1", asset_type: "chat", difficulty_level: "2" })).toString("base64");
+    const r1 = await app.inject({ method: "POST", url: "/v1/chat/completions",
+      headers: { "x-content-envelope": env }, payload: { model: MODEL, messages: [{ role: "user", content: "What is Amazon S3?" }], temperature: 0 } });
+    await app.inject({ method: "POST", url: "/v1/chat/completions",
+      headers: { "x-content-envelope": env }, payload: { model: MODEL, messages: [{ role: "user", content: "What is Amazon S3?" }], temperature: 0 } });
+
+    const s = statsPayload();
+    assert.equal(s.totals.requests, 2, "exactly two requests counted");
+    assert.equal(s.totals.exact_hits, 1, "one exact hit on the resend");
+    assert.equal(s.totals.tokens_saved, config.estimatedTokensPerAnswer,
+      "tokens_saved equals one hit's estimate, not just a present key");
+    assert.equal(s.totals.cost_saved_usd,
+      Number((config.estimatedTokensPerAnswer * config.costPerTokenUsd).toFixed(6)),
+      "cost saved is derived from the concrete token count");
+    assert.equal(s.breakdown.totals.hits, 1, "breakdown records the one hit");
+    assert.equal(typeof s.request_id, "string");
+    assert.ok(s.recent.some((e) => e.request_id === r1.headers["x-request-id"]));
+    await app.close();
   } finally {
     teardown();
   }

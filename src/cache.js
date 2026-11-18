@@ -37,7 +37,7 @@ import { DomainPolicy, OPEN_POLICY } from "./domain.js";
 import { coverageVerdict } from "./lexicon.js";
 import { storeBreaker } from "./breaker.js";
 import { inferenceLimiter } from "./ratelimit.js";
-import { configureNegativeCache, clearNegativeCache, rememberNegative, lookupNegative } from "./negative_cache.js";
+import { configureNegativeCache, clearNegativeCache, rememberNegative, lookupNegative, forgetNegative } from "./negative_cache.js";
 import { scoreRerank, rerankerInfo } from "./reranker.js";
 import { splitIntents } from "./intents.js";
 import { retrieve, groundRequest, PREFILL, assembleAnswer } from "./knowledge.js";
@@ -353,12 +353,20 @@ export async function verifyCandidateCore(candidate, candFp, ctx) {
   }
 
   // 4. review floor -- an unreviewed entry must not reach the tutor path.
+  //    #69: EXCEPTION for self-reuse. A consumer may reuse the unreviewed
+  //    answer IT just generated (same caller identity). Another actor's draft
+  //    still fails the floor, preserving the SOP guarantee.
   const need = ctx.minReviewStatus;
   if (need && reviewRank(candFp?.review_status) < reviewRank(need)) {
-    return {
-      ok: false,
-      reason: `review_status '${candFp?.review_status}' below required '${need}'`,
-    };
+    const selfReuse = Boolean(
+      candFp?.origin_client && ctx.clientId && candFp.origin_client === ctx.clientId
+    );
+    if (!selfReuse) {
+      return {
+        ok: false,
+        reason: `review_status '${candFp?.review_status}' below required '${need}'`,
+      };
+    }
   }
 
   // 5. #64: optional cross-encoder reranker. Deliberately LAST: the cheap
@@ -428,12 +436,22 @@ function deterministicTier(envelope) {
 // The main entry point
 
 export async function handleChat(body, { envelopeHeader = "", role = "author", maxTokens,
-  requireGrounded = false, trusted = false, clientId = "local", requestId, streamDelta } = {}) {
+  requireGrounded = false, trusted = false, clientId = "local", requestId, streamDelta,
+  streamHeaders, reviewStatus: reviewStatusOverride } = {}) {
   const started = performance.now();
   // #66: a trace id minted by the HTTP layer (or here for direct callers).
   const rid = requestId || `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   // #62: streaming is opt-in via stream=true with a delta sink.
   const wantStream = Boolean(body?.stream && typeof streamDelta === "function");
+  // #71: headers must go out BEFORE the first live delta. Called once, just
+  // before inference (miss) by handleChat; cache hits are handled by the HTTP
+  // layer after the verdict is known.
+  let streamBegun = false;
+  const beginStream = (headers) => {
+    if (!wantStream || streamBegun || typeof streamHeaders !== "function") return;
+    streamBegun = true;
+    streamHeaders(headers);
+  };
   // #41: normalize answer-affecting params before keying and inference, so a
   // huge max_tokens cannot bypass the ceiling by being hashed verbatim.
   if (body && typeof body === "object" && body.max_tokens !== undefined) {
@@ -534,15 +552,23 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   if (policy.mode !== "off" && config.negativeCacheTtlS > 0) {
     const neg = await lookupNegative(prompt || semText);
     if (neg) {
-      const latency = performance.now() - started;
-      db().recordEvent({
-        ts: new Date().toISOString(), status: "bypass", model: body.model, request_id: rid, reranker_score: ctx.lastRerankerScore,
-        latency_ms: round1(latency), prompt,
-        reason: `negative-cache (${neg.status}): ${neg.reason}`, tier: "domain",
-      });
-      db().increment(["requests", "bypasses", "out_of_domain", "negative_hits"]);
-      noteOutcome("out-of-domain", 0, latency);
-      throw domainRefusalError(policy, neg.reason);
+      // #70: NEVER trust similarity alone. Re-run the real domain guard; a
+      // mixed question ("Does S3 store images like the Mona Lisa?") is close
+      // to a refused one but contains in-domain vocabulary and must be served.
+      const recheck = await policy.classify(prompt || semText).catch(() => null);
+      if (recheck && recheck.inDomain) {
+        forgetNegative(prompt || semText).catch(() => {}); // drop the stale refusal
+      } else {
+        const latency = performance.now() - started;
+        db().recordEvent({
+          ts: new Date().toISOString(), status: "bypass", model: body.model, request_id: rid, reranker_score: ctx.lastRerankerScore,
+          latency_ms: round1(latency), prompt,
+          reason: `negative-cache (${neg.status}): ${neg.reason}`, tier: "domain",
+        });
+        db().increment(["requests", "bypasses", "out_of_domain", "negative_hits"]);
+        noteOutcome("out-of-domain", 0, latency);
+        throw domainRefusalError(policy, neg.reason);
+      }
     }
   }
 
@@ -836,6 +862,14 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
     err.public = true;
     throw err;
   }
+  // #71: a miss is now certain (guard passed, exact/semantic tiers declined).
+  // Send SSE headers with the miss verdict before any token delta arrives.
+  beginStream({
+    "x-cache-status": "miss",
+    "x-cache-latency-ms": "0.0",
+    "x-cache-policy": ctx.outOfDomain ? "out-of-domain" : "miss",
+  });
+
   let payload;
   let failure = null;
   let grounding = null;
@@ -988,7 +1022,8 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   }
   if (!ctx.outOfDomain && !failure && !(config.trustedWritesOnly && !ctx.trusted)) {
   try {
-    const reviewStatus = role === "author" ? "draft" : "needs_academic_review";
+    const reviewStatus = reviewStatusOverride
+      || (role === "author" ? "draft" : "needs_academic_review");
     const entryId = db().insertEntry({
       fingerprint,
       scope,
@@ -1005,6 +1040,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
       source_prompt: null,
       created_at: Date.now(),
       last_used_at: Date.now(),
+      origin_client: ctx.clientId || null,
     });
     // index for the semantic tier (best effort)
     if (config.distanceThreshold > 0) {
@@ -1154,7 +1190,7 @@ export function statsPayload({ breakdownDim } = {}) {
   const events = db().recentEvents(config.statsEventLimit).map((e) => ({
     id: Number(e.id), ts: e.ts, status: e.status, model: e.model,
     similarity: e.similarity, threshold: e.threshold, latency_ms: e.latency_ms,
-    embed_ms: e.embed_ms, redis_ms: e.redis_ms, prompt: e.prompt,
+    embed_ms: e.embed_ms, redis_ms: e.redis_ms, infer_ms: e.infer_ms, prompt: e.prompt,
     response: e.response, source_prompt: e.source_prompt, reason: e.reason,
     request_id: e.request_id ?? null,
     reranker_score: e.reranker_score ?? null,

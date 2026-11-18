@@ -42,10 +42,9 @@ export function defaultCmd() {
     "--no-warmup",
     "--api-key", config.upstreamKey,
   ];
-  // #68: llama.cpp reuses the KV cache of a matching prompt prefix across
-  // requests (the shared system prompt + RAG preamble). Disabled with
-  // MODEL_CACHE_PROMPT=0 if memory-constrained.
-  if (config.modelCachePrompt) args.push("--cache-prompt");
+  // #68/#74: llama.cpp enables prompt caching by DEFAULT, so disabling the
+  // knob must pass the explicit off switch -- omitting the flag was inert.
+  args.push(config.modelCachePrompt ? "--cache-prompt" : "--no-cache-prompt");
   return args;
 }
 
@@ -273,7 +272,9 @@ export async function infer(body, { maxTokens, prefill } = {}) {
 export async function inferStream(body, { maxTokens, prefill } = {}, onDelta = () => {}) {
   if (_inferForTests) {
     const t0 = performance.now();
-    const out = await _inferForTests(body, { maxTokens, prefill });
+    // #71: pass the delta sink to the stub so tests can emit tokens
+    // incrementally. A stub that returns message content still emits it once.
+    const out = await _inferForTests(body, { maxTokens, prefill }, onDelta);
     totalInferMs += performance.now() - t0;
     totalInferences += 1;
     lastUsedAt = Date.now();

@@ -47,12 +47,17 @@ test("#67 embed rejects a dimension mismatch with a clear remediation", async ()
   } finally { restore(); }
 });
 
-test("#67 embed accepts a correctly-dimensioned vector", async () => {
+test("#67 embed accepts a correctly-dimensioned vector with finite, non-zero values", async () => {
   fresh();
   try {
-    setEmbedForTests(() => new Array(8).fill(0.1));
+    const unitVec = (() => { const v = new Array(8).fill(0.1); const n = Math.hypot(...v); return v.map((x) => x / n); })();
+    setEmbedForTests(() => unitVec);
     const v = await embed("hello");
     assert.equal(v.length, 8);
+    assert.ok(v.every(Number.isFinite), "all components are finite");
+    assert.ok(v.some((x) => x !== 0), "the vector is non-zero");
+    const norm = Math.sqrt(v.reduce((a, x) => a + x * x, 0));
+    assert.ok(Math.abs(norm - 1) < 1e-6, `vector is normalized (norm=${norm})`);
   } finally { restore(); }
 });
 

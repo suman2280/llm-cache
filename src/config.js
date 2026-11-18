@@ -160,7 +160,8 @@ export const config = {
   // #64: optional cross-encoder reranker for semantic candidate verification.
   // off (default) = unchanged behaviour; onnx = lazy cross-encoder.
   verifierReranker: env("VERIFIER_RERANKER", "off"),
-  rerankerModel: env("RERANKER_MODEL", "Xenova/cross-encoder-mmini-lm-L6-v2"),
+  // A real ONNX cross-encoder on HF (BertForSequenceClassification, ONNX weights).
+  rerankerModel: env("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L6-v2"),
   rerankerThreshold: envFloat("RERANKER_THRESHOLD", 0.5),
   rerankerIdleS: envInt("RERANKER_IDLE_S", 300),
   // #37: declared target false-positive rate. Coverage thresholds are

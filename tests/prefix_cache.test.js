@@ -15,12 +15,14 @@ import { setRetrieveForTests, resetKnowledgeForTests } from "../src/knowledge.js
 import { handleChat, invalidateVectorCache, statsPayload } from "../src/cache.js";
 import { configureLimiter } from "../src/ratelimit.js";
 
-test("#68 spawn args include --cache-prompt when enabled, not when disabled", () => {
+test("#68/#74 spawn args use --cache-prompt on and --no-cache-prompt off", () => {
   const orig = config.modelCachePrompt;
   try {
     config.modelCachePrompt = true;
-    assert.ok(defaultCmd().includes("--cache-prompt"));
+    assert.ok(defaultCmd().includes("--cache-prompt"), "on: enable prefix caching");
+    assert.ok(!defaultCmd().includes("--no-cache-prompt"));
     config.modelCachePrompt = false;
+    assert.ok(defaultCmd().includes("--no-cache-prompt"), "off: explicitly disable (llama.cpp defaults on)");
     assert.ok(!defaultCmd().includes("--cache-prompt"));
   } finally { config.modelCachePrompt = orig; }
 });
@@ -39,6 +41,36 @@ test("#68 extractTimings parses llama.cpp timings and OpenAI usage", () => {
   assert.equal(b.completion_tokens, 10);
   assert.equal(b.cached_tokens, 20);
   assert.equal(b.prompt_eval_ms, null, "unreported fields stay null, not invented");
+});
+
+test("#76 estimated_inference_ms_saved is non-zero after a miss + hit", async () => {
+  const ORIG = config.model;
+  config.model = "test-model"; config.domainMode = "off";
+  config.distanceThreshold = 0.35; config.groundingTopK = 3;
+  config.trustedWritesOnly = false; config.minReviewStatus = "draft";
+  config.maxInferencesPerMinute = 10000; config.cacheTtlS = 0; config.maxEntries = 0;
+  configureLimiter(10000);
+  setStore(new Store(":memory:")); useMemoryVectors(true); invalidateVectorCache();
+  setEmbedForTests(() => null);
+  setRetrieveForTests(async () => []);
+  resetKnowledgeForTests();
+  setInferForTests(async () => {
+    await new Promise((r) => setTimeout(r, 8)); // ensure a measurable infer_ms
+    return { id: "x", object: "chat.completion", created: 1, model: "test-model",
+      choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "A grounded answer about S3." } }] };
+  });
+  try {
+    const body = { model: "test-model", messages: [{ role: "user", content: "What is Amazon S3?" }], temperature: 0 };
+    await handleChat(body, { trusted: true });
+    await handleChat(body, { trusted: true }); // exact hit
+    const s = statsPayload();
+    assert.ok(s.totals.estimated_inference_ms_saved > 0, "time-saved estimate is not stuck at 0");
+    assert.ok(s.recent.some((e) => typeof e.infer_ms === "number" && e.infer_ms > 0),
+      "infer_ms is present on recent events for the aggregation to consume");
+  } finally {
+    setInferForTests(null); setEmbedForTests(null); setRetrieveForTests(null);
+    resetKnowledgeForTests(); useMemoryVectors(false); resetStore(); config.model = ORIG;
+  }
 });
 
 test("#68 miss event/headers carry prefill timing; stats reports prefix cache", async () => {

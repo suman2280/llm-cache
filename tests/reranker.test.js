@@ -19,7 +19,9 @@ import { setInferForTests } from "../src/model.js";
 import { setEmbedForTests } from "../src/embedder.js";
 import { setRetrieveForTests, resetKnowledgeForTests } from "../src/knowledge.js";
 import { verifyCandidateCore, handleChat, invalidateVectorCache } from "../src/cache.js";
-import { setRerankerForTests, clearRerankerForTests, rerankerInfo } from "../src/reranker.js";
+import { setRerankerForTests, clearRerankerForTests, rerankerInfo,
+  setRerankerLoaderForTests, clearRerankerLoaderForTests } from "../src/reranker.js";
+import { scoreRerank } from "../src/reranker.js";
 import { configureLimiter } from "../src/ratelimit.js";
 
 const CHUNK_TEXT = "EC2 instances (virtual machines) — resizable virtual servers called instances.";
@@ -91,6 +93,31 @@ test("#64 reranker rejection is counted", async () => {
     assert.equal(getStore().counters().reranker_rejections, 1);
     clearRerankerForTests();
   } finally { resetStore(); }
+});
+
+test("#75 default reranker model is a real ONNX cross-encoder on HF", () => {
+  assert.equal(config.rerankerModel, "cross-encoder/ms-marco-MiniLM-L6-v2");
+});
+
+test("#75 an enabled-but-unloadable reranker is reported, not silent", async () => {
+  const origMode = config.verifierReranker;
+  config.verifierReranker = "onnx";
+  clearRerankerForTests();
+  clearRerankerLoaderForTests();
+  setRerankerLoaderForTests(async () => { throw new Error("model-not-found"); });
+  try {
+    const score = await scoreRerank("q", "p", "a");
+    assert.equal(score, null, "fail-open: no score when the model cannot load");
+    const info = rerankerInfo();
+    assert.equal(info.enabled, true);
+    assert.equal(info.failed, true, "failure is reported");
+    assert.match(info.failure_reason, /model-not-found/);
+    assert.equal(info.status, "failed");
+  } finally {
+    clearRerankerLoaderForTests();
+    clearRerankerForTests();
+    config.verifierReranker = origMode;
+  }
 });
 
 test("#64 a reranker-rejected semantic candidate falls through to a miss", async () => {

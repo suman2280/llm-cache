@@ -23,8 +23,8 @@ Tagged `v0-scrapped`; a full pre-scrap tarball is outside the repo. Git history 
 (`origin` is `git@github.com:suman2280/llm-cache.git`, so the old code remains recoverable and a
 history rewrite would be an irreversible force-push over a live remote for no benefit).
 
-The dashboard is not runnable today — it fronts `/stats`, `/v1/chat/completions` and `/healthz`,
-and nothing serves them yet. That is the build.
+The dashboard is the frozen acceptance spec. This build serves `/stats`, `/v1/chat/completions`
+and `/healthz` so the dashboard runs against it unchanged.
 
 ---
 
@@ -139,8 +139,8 @@ scale, a gateway with many upstream providers, auth UI, billing.
 
 ## 4. Open decisions — resolved
 
-All four were answered while building; the reasoning still matters, so it is
-recorded here.
+Three were resolved while building; DEC-4 remains open (see below). The reasoning
+that answered each one still matters, so it is recorded here.
 
 | Decision | Resolution |
 |---|---|

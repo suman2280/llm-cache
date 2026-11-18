@@ -85,6 +85,7 @@ test("#63 warming is idempotent; dry-run reports hit/miss without model", async 
   const dry1 = await warmQueries(["What is Amazon S3?"], { dryRun: true });
   assert.equal(dry1.would_miss, 1, "dry run reports a miss before warming");
   assert.equal(dry1.model_invocations, 0, "dry run invokes no model");
+  assert.equal(getLastWarm(), null, "#72 a dry run does not write last_warm");
 
   await warmQueries(["What is Amazon S3?"], { concurrency: 1 });
   const dry2 = await warmQueries(["What is Amazon S3?"], { dryRun: true });
@@ -93,6 +94,18 @@ test("#63 warming is idempotent; dry-run reports hit/miss without model", async 
   const again = await warmQueries(["What is Amazon S3?"], { concurrency: 1 });
   assert.equal(again.skipped, 1, "re-warming skips an already-cached question");
   assert.equal(again.warmed, 0);
+});
+
+test("#72 warmed entries are servable to a normal consumer", async (t) => {
+  setup(); t.after(teardown);
+  const q = "What is Amazon S3?";
+  await warmQueries([q], { concurrency: 1 });
+
+  const out = await handleChat(chat(q), { trusted: false, role: "consumer", clientId: "real-user" });
+  assert.equal(out.status, "exact-hit", "a consumer must be able to reuse a warmed answer");
+
+  const rows = (await import("../src/store.js")).getStore().listEntries({ limit: 10 });
+  assert.ok(rows.some((r) => r.review_status === "approved"), "warmed entries are approved");
 });
 
 test("#63 last_warm is surfaced in /stats", async (t) => {

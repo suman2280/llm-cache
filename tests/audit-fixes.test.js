@@ -165,11 +165,13 @@ test("#51 the review log never stores a raw admin token", () => {
 
 // ---------------------------------------------------------------- #59 ------
 test("#59 the breaker reserves exactly one probe in half-open", () => {
-  const b = new Breaker({ threshold: 2, cooldownMs: 1 });
+  // Use a cooldown long enough that the circuit is still OPEN immediately
+  // after the failures; a 1ms cooldown raced with the assertion under load.
+  const b = new Breaker({ threshold: 2, cooldownMs: 50 });
   b.failure(); b.failure(); // open
   assert.equal(b.state, "open");
-  // wait for cooldown
-  const wait = Date.now() + 10;
+  // wait past cooldown
+  const wait = Date.now() + 60;
   while (Date.now() < wait) { /* spin */ }
   assert.equal(b.state, "half-open");
   assert.ok(b.allow(), "the first probe is admitted");
@@ -192,9 +194,12 @@ test("#59 the shared limiter is configured (not the default 20)", () => {
 test("#39 template entries get a real fingerprint, not the empty string", () => {
   // regression: every template insert used `fingerprint: ""`, which is NOT
   // NULL and UNIQUE, so the second generation threw SQLITE_CONSTRAINT_UNIQUE
-  const fp = templates.templateKey("T-EC2-COST", { instance_type: "m5.large", count: "4", hours: "730" });
-  assert.ok(fp.length > 0);
-  assert.notEqual(fp, "");
+  const params = { instance_type: "m5.large", count: "4", hours: "730" };
+  const fp = templates.templateKey("T-EC2-COST", params);
+  // #79: assert the actual property a UNIQUE/ NOT NULL key needs, not a tautology.
+  assert.ok(fp.startsWith("T-EC2-COST:"), "a real, namespaced key (never the empty string)");
+  assert.equal(fp, templates.templateKey("T-EC2-COST", params), "keying is deterministic");
+  assert.notEqual(fp, templates.templateKey("T-EC2-COST", { ...params, hours: "160" }));
 });
 
 

@@ -16,6 +16,7 @@ import { getStore as db } from "./store.js";
 import * as vectors from "./vectors.js";
 import * as cache from "./cache.js";
 import { invalidateVectorCache } from "./cache.js";
+import { clearNegativeCache } from "./negative_cache.js";
 import * as model from "./model.js";
 import * as templates from "./templates.js";
 import { encodeEnvelope, asciiHeaderValue, parseEnvelope, scopeOf } from "./keying.js";
@@ -130,41 +131,66 @@ export async function build() {
       trusted, clientId, requestId: req.requestId };
     try {
       if (req.body?.stream) {
-        // #62: stream=true returns text/event-stream. Deltas are buffered while
-        // the cache/guard/verifier/infer path runs, then headers (with the real
-        // X-Cache-* verdict) are written before the first chunk. A streamed
-        // miss still goes through grounding + degeneracy checks + cache
-        // write-back because it is the same handleChat path.
-        const deltas = [];
-        const out = await cache.handleChat(req.body, {
-          ...opts, streamDelta: (t) => { if (t) deltas.push(t); },
-        });
-        const answer = out.response?.choices?.[0]?.message?.content
-          ?? deltas.join("") ?? "";
-        const id = out.response?.id || `chatcmpl-${req.requestId}`;
-        const model = out.response?.model || config.model;
-        reply.hijack();
-        reply.raw.writeHead(200, {
-          "Content-Type": "text/event-stream; charset=utf-8",
-          "Cache-Control": "no-cache",
-          Connection: "keep-alive",
-          ...out.headers,
-          "x-request-id": req.requestId,
-        });
-        const chunks = answer ? answer.match(/(\S+\s*)/g) || [answer] : [];
-        for (const chunk of chunks) {
-          reply.raw.write(`data: ${JSON.stringify({
+        // #71: TRUE incremental streaming. We hijack the reply and write each
+        // delta to the socket as it arrives. For a miss, handleChat calls
+        // `streamHeaders` just before inference (so the verdict is known), and
+        // the model's onDelta sink writes frames live. For a hit, no deltas
+        // are produced during handleChat, so we emit cached headers + chunks
+        // afterwards. Errors after headers are sent become in-band SSE errors.
+        let sent = false;
+        let id = `chatcmpl-${req.requestId}`;
+        let model = config.model;
+        const writeFrame = (obj) => reply.raw.write(`data: ${JSON.stringify(obj)}\n\n`);
+        const sendHeaders = (h = {}) => {
+          if (sent) return;
+          sent = true;
+          reply.hijack();
+          reply.raw.writeHead(200, {
+            "Content-Type": "text/event-stream; charset=utf-8",
+            "Cache-Control": "no-cache",
+            Connection: "keep-alive",
+            ...h,
+            "x-request-id": req.requestId,
+          });
+        };
+        const streamDelta = (t) => {
+          if (!t) return;
+          if (!sent) sendHeaders({ "x-cache-status": "miss" });
+          writeFrame({
             id, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model,
-            choices: [{ index: 0, delta: { content: chunk }, finish_reason: null }],
-          })}\n\n`);
+            choices: [{ index: 0, delta: { content: t }, finish_reason: null }],
+          });
+        };
+        try {
+          const out = await cache.handleChat(req.body, {
+            ...opts, streamDelta, streamHeaders: sendHeaders,
+          });
+          id = out.response?.id || id;
+          model = out.response?.model || model;
+          if (!sent) {
+            // Cache hit: no live deltas -- send the real verdict headers, then
+            // the cached answer as SSE chunks.
+            sendHeaders(out.headers);
+            const answer = out.response?.choices?.[0]?.message?.content ?? "";
+            const chunks = answer.match(/(\S+\s*)/g) || (answer ? [answer] : []);
+            for (const chunk of chunks) streamDelta(chunk);
+          }
+          writeFrame({
+            id, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model,
+            choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          });
+          reply.raw.write("data: [DONE]\n\n");
+          reply.raw.end();
+          return;
+        } catch (err) {
+          if (sent) {
+            writeFrame({ error: { message: err.public ? err.message : "stream failed" } });
+            reply.raw.write("data: [DONE]\n\n");
+            reply.raw.end();
+            return;
+          }
+          throw err; // no headers yet: let the normal error handler respond
         }
-        reply.raw.write(`data: ${JSON.stringify({
-          id, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model,
-          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-        })}\n\n`);
-        reply.raw.write("data: [DONE]\n\n");
-        reply.raw.end();
-        return;
       }
       const out = await cache.handleChat(req.body, opts);
       reply.headers(out.headers);
@@ -576,6 +602,7 @@ export async function build() {
     if (!adminOk(req)) return reply.code(404).send({ detail: "not found" });
     const documents = db().countEntries();
     db().db.exec("DELETE FROM cache_entries");
+    clearNegativeCache();
     const vectorsPurged = await vectors.purgeIndex();
     db().resetStats();
     return {
@@ -599,6 +626,7 @@ export async function build() {
     if (!adminOk(req)) return reply.code(404).send({ detail: "not found" });
     const documents = db().countEntries();
     db().db.exec("DELETE FROM cache_entries");
+    clearNegativeCache();
     const vectorsPurged = await vectors.purgeIndex();
     return { purged_documents: documents, purged_vectors: vectorsPurged };
   });
@@ -646,6 +674,7 @@ export async function build() {
   app.post("/demo/seed", async (req, reply) => {
     if (!adminOk(req) || !config.allowSeed) return reply.code(404).send({ detail: "demo seed disabled" });
     const { seedDemoCorpus } = await import("./corpus.js");
+    clearNegativeCache();
     const n = await seedDemoCorpus(db());
     return { seeded: n };
   });

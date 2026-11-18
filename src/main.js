@@ -55,8 +55,12 @@ async function main() {
   const { startIdleTimer } = await import("./embedder.js");
   startIdleTimer();
   // #64: unload the optional reranker on the same idle lifecycle as the embedder.
-  const { maybeUnloadReranker } = await import("./reranker.js");
+  const { maybeUnloadReranker, rerankerInfo } = await import("./reranker.js");
   setInterval(() => { maybeUnloadReranker().catch(() => {}); }, 30_000).unref?.();
+  const rr = rerankerInfo();
+  // #75: make the reranker state (and any load failure) visible at startup and
+  // on every /stats poll -- enabling a missing model is never a silent no-op.
+  console.log(`[app] reranker ${rr.status} (${rr.mode}${rr.enabled ? `, ${rr.model}` : ""}) -- see /stats.service.error_budget.reranker`);
 }
 
 main().catch((err) => {

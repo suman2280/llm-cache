@@ -106,7 +106,7 @@ async function main() {
   console.log(`\n${bold("3. semantic tier — a rewording (the model is still stopped)")}`);
   const s1 = await post("/v1/chat/completions", { model: "qwen2.5-7b-instruct", messages: [
     { role: "system", content: "You are an AWS enterprise assistant." },
-    { role: "user", content: "Explain how S3 encrypts data at rest." }], temperature: 0.3, max_tokens: 250 },
+    { role: "user", content: "Explain how S3 server-side encryption works." }], temperature: 0.3, max_tokens: 250 },
     { "x-content-envelope": env({ concept_id: "AWS-06", asset_type: "learning_object", difficulty_level: "2" }) });
   show("rewording", s1, s1.h.get("x-cache-source-prompt") ? `from: "${decodeURIComponent(s1.h.get("x-cache-source-prompt"))}"` : "");
 
@@ -140,7 +140,7 @@ async function main() {
   const pct = t?.requests ? Math.round((avoided / t.requests) * 100) : 0;
   console.log(`  requests that never touched the model: ${bold(`${avoided} of ${t?.requests} (${pct}%)`)}`);
 
-  console.log(`\n${dim("The model process can now be left to idle out (LLM_MODEL_IDLE_S),")}`);
+  console.log(`\n${dim("The model process can now be left to idle out (MODEL_IDLE_S),")}`);
   console.log(dim("after which the box serves everything above at Node-speed with no"));
   console.log(dim("4.6 GB model resident at all."));
   console.log();

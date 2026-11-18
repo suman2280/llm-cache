@@ -17,7 +17,7 @@ import { useMemoryVectors } from "../src/vectors.js";
 import { setInferForTests } from "../src/model.js";
 import { setEmbedForTests } from "../src/embedder.js";
 import { setRetrieveForTests, resetKnowledgeForTests } from "../src/knowledge.js";
-import { invalidateVectorCache } from "../src/cache.js";
+import { invalidateVectorCache, handleChat } from "../src/cache.js";
 import { build } from "../src/server.js";
 import { configureLimiter } from "../src/ratelimit.js";
 
@@ -95,6 +95,36 @@ test("#62 streamed miss → exact-hit, with SSE shape and headers on the first c
   await app.close();
 });
 
+test("#71 deltas are delivered incrementally, not buffered until completion", async (t) => {
+  setup();
+  t.after(teardown);
+
+  const times = [];
+  const headers = [];
+  // A gated stub: emit one token, PAUSE for 60ms, emit a second token, then
+  // finish. A buffered implementation would deliver both at the same instant.
+  setInferForTests(async (_body, _opts, onDelta) => {
+    onDelta("Amazon S3 ");
+    await new Promise((r) => setTimeout(r, 60));
+    onDelta("stores objects in buckets.");
+    return { id: "g", object: "chat.completion", created: 1, model: MODEL,
+      choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "" } }] };
+  });
+
+  const out = await handleChat(chat("What is Amazon S3?"), {
+    trusted: true,
+    streamDelta: (text) => { times.push({ t: performance.now(), text }); },
+    streamHeaders: (h) => { headers.push({ t: performance.now(), h }); },
+  });
+  assert.equal(out.status, "miss");
+  assert.equal(headers.length, 1, "headers emitted exactly once, before any delta");
+  assert.ok(times.length >= 2, `expected two streamed deltas, got ${times.length}`);
+  assert.ok(headers[0].t <= times[0].t, "headers precede the first delta");
+  const gap = times[1].t - times[0].t;
+  assert.ok(gap >= 40, `deltas must arrive incrementally (gap ${gap.toFixed(1)}ms, expected >= 40ms)`);
+  assert.equal(times.map((x) => x.text).join(""), "Amazon S3 stores objects in buckets.");
+});
+
 test("#62 degenerate streamed output is not cached", async (t) => {
   let calls = 0;
   setup(() => {
@@ -113,7 +143,10 @@ test("#62 degenerate streamed output is not cached", async (t) => {
   // become an exact hit off the degenerate answer.
   const r2 = await app.inject({ method: "POST", url: "/v1/chat/completions",
     payload: chat("What is Amazon S3?") });
-  assert.notEqual(r2.headers["x-cache-status"], "exact-hit",
-    "degenerate streamed output must never be cached as an exact hit");
+  for (const res of [r, r2]) {
+    assert.ok(!["exact-hit", "semantic-hit"].includes(res.headers["x-cache-status"]),
+      "degenerate streamed output must never be served as a hit");
+  }
+  assert.ok(calls >= 2, "#79 a second identical request re-invoked the model: nothing was cached");
   await app.close();
 });

@@ -24,6 +24,16 @@ const ttl = () => (overrideTtl === null ? config.negativeCacheTtlS : overrideTtl
 export function clearNegativeCache() { entries = []; }
 export function negativeCacheSize() { return entries.length; }
 
+/** #70: drop a stale refusal when the guard says the question is in-domain. */
+export async function forgetNegative(text) {
+  if (!text) return 0;
+  const vec = await embed(text).catch(() => null);
+  if (!vec) return 0;
+  const before = entries.length;
+  entries = entries.filter((e) => cosine(e.vec, vec) < 1 - config.distanceThreshold);
+  return before - entries.length;
+}
+
 function cosine(a, b) {
   if (!a || !b || a.length !== b.length) return -1;
   let dot = 0, na = 0, nb = 0;
