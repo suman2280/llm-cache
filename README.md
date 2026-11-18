@@ -611,6 +611,34 @@ target. The benchmark caught a real false positive ("How do I price an EC2 spot 
 served "What is an EC2 instance?"), which is why equivalence now requires the **top** KB chunk
 to match rather than any shared ancestor.
 
+## Operations: streaming, warming, and the safety knobs
+
+- **Streaming** — `POST /v1/chat/completions` with `stream: true` returns `text/event-stream`
+  (SSE `data:` frames ending in `[DONE]`). `X-Cache-*` headers are written before the first
+  chunk; a streamed miss still passes grounding + the verifier and writes back to both tiers,
+  so the next identical request is a streamed exact-hit.
+- **Warming** — `node scripts/warm_cache.mjs --file queries.jsonl` (or `--demo`, or
+  `POST /cache/warm` with `{"queries":[...]}`) precomputes answers through the same guard /
+  grounding / verifier path with bounded concurrency (`WARM_CONCURRENCY`). Re-warming is
+  idempotent; `--dry-run` reports would-hit / would-miss without calling the model. The last
+  run is exposed as `/stats.service.last_warm`.
+- **Negative cache** — repeated or reworded out-of-domain questions are refused directly
+  without re-running classification (`NEGATIVE_CACHE_TTL_S`, 0 disables). Entries are cleared
+  on corpus/KB invalidation and can never refuse an in-domain question.
+- **Optional reranker** — `VERIFIER_RERANKER=onnx` adds a lazy cross-encoder second stage
+  after the cheap guards; it is unloaded on idle and fails open if unavailable. Default `off`
+  leaves verification unchanged. `node scripts/bench_cache.mjs --reranker=on|off` reports the
+  recall/FPR delta; `--embedder=<model> --dim=<n>` compares embedders on the same labelled set.
+- **Pluggable embedder** — `EMBEDDER_MODEL` / `VECTOR_DIM` select the semantic model. A
+  dimension or model change is detected at startup and fails loudly; run
+  `node scripts/reindex_vectors.mjs` to rebuild the vector index without touching SQLite
+  provenance (idempotent, reports progress). Identity and TTFT / cached-token counts are
+  surfaced in `/stats` and `/healthz`.
+- **Prefix caching & trace IDs** — `--cache-prompt` (`MODEL_CACHE_PROMPT`) reuses the KV cache
+  of the shared prompt prefix on warm slots; TTFT / prefill timing is reported on miss events
+  and headers. Every response carries `x-request-id`, echoed on its event. `/stats?breakdown=scope`
+  (and `/metrics`) expose per-scope/template hit rates and a cost-saved estimate.
+
 ## The SOP mapping
 
 The demo corpus is AWS-shaped (`MATH-01-AWS`) so that every gate in the SOP maps 1:1 onto a
