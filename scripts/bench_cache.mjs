@@ -14,6 +14,12 @@ import { retrieve } from "../src/knowledge.js";
 import { verifyCandidateCore } from "../src/cache.js";
 import config from "../src/config.js";
 
+// #64: `--reranker=on|off` toggles the optional second-stage scorer so the
+// benchmark can report the recall/FPR delta. Off is the default.
+const rerankFlag = process.argv.find((a) => a.startsWith("--reranker="))?.split("=")[1];
+if (rerankFlag === "on") config.verifierReranker = "onnx";
+if (rerankFlag === "off") config.verifierReranker = "off";
+
 // (query, cached question, should hit)
 const CASES = [
   // --- should hit: rewordings of the same question -----------------------
@@ -92,6 +98,9 @@ async function decide(query, cachedQuestion, origin, candidateCount) {
     queryText: query,
     chunkIds,
     chunkText,
+    // #64: enable the optional reranker for this run when requested.
+    reranker: { enabled: config.verifierReranker !== "off", threshold: config.rerankerThreshold, countRejections: false },
+    lastRerankerScore: null,
   };
 
   // Fixed candidate count N: the intended cached entry plus distractors from
@@ -139,6 +148,7 @@ async function runOrigin(origin, n) {
 
 const N = 20;
 console.log(`Cache verifier benchmark — ${CASES.length} labelled pairs, fixed topK=3`);
+console.log(`Reranker: ${config.verifierReranker === "off" ? "OFF" : `ON (${config.verifierReranker}, threshold ${config.rerankerThreshold})`}`);
 console.log("=".repeat(70));
 
 const originResults = [];

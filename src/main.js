@@ -51,6 +51,9 @@ async function main() {
   // runtime (~250 MB) stayed resident once the semantic tier had used it.
   const { startIdleTimer } = await import("./embedder.js");
   startIdleTimer();
+  // #64: unload the optional reranker on the same idle lifecycle as the embedder.
+  const { maybeUnloadReranker } = await import("./reranker.js");
+  setInterval(() => { maybeUnloadReranker().catch(() => {}); }, 30_000).unref?.();
 }
 
 main().catch((err) => {

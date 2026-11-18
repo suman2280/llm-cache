@@ -38,6 +38,7 @@ import { coverageVerdict } from "./lexicon.js";
 import { storeBreaker } from "./breaker.js";
 import { inferenceLimiter } from "./ratelimit.js";
 import { configureNegativeCache, clearNegativeCache, rememberNegative, lookupNegative } from "./negative_cache.js";
+import { scoreRerank, rerankerInfo } from "./reranker.js";
 import { splitIntents } from "./intents.js";
 import { retrieve, groundRequest, PREFILL, assembleAnswer } from "./knowledge.js";
 import { detectDegeneracy } from "./degenerate.js";
@@ -359,6 +360,20 @@ export async function verifyCandidateCore(candidate, candFp, ctx) {
       reason: `review_status '${candFp?.review_status}' below required '${need}'`,
     };
   }
+
+  // 5. #64: optional cross-encoder reranker. Deliberately LAST: the cheap
+  //    guards above reject most bad candidates before paying for the model.
+  //    Fail-open (null score) keeps the default 'off' behaviour unchanged.
+  if (ctx.reranker?.enabled) {
+    const rr = await scoreRerank(ctx.queryText, candFp?.prompt ?? "", answer);
+    if (rr) {
+      ctx.lastRerankerScore = rr.score;
+      if (rr.score < (ctx.reranker.threshold ?? config.rerankerThreshold)) {
+        if (ctx.reranker.countRejections !== false) db().increment("reranker_rejections");
+        return { ok: false, reason: `reranker score ${rr.score.toFixed(3)} below threshold`, score: rr.score };
+      }
+    }
+  }
   return { ok: true };
 }
 
@@ -457,6 +472,8 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
     trusted,
     clientId,
     requestId: rid,
+    reranker: { enabled: config.verifierReranker !== "off", threshold: config.rerankerThreshold },
+    lastRerankerScore: null,
     // The content path is strict: an ungrounded answer may not become content.
     // The chat path serves it labelled and uncached.
     requireGrounded,
@@ -480,7 +497,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   const reject = async (status, reason) => {
     const latency = performance.now() - started;
     db().recordEvent({
-      ts: new Date().toISOString(), status, model: body?.model ?? config.model, request_id: rid,
+      ts: new Date().toISOString(), status, model: body?.model ?? config.model, request_id: rid, reranker_score: ctx.lastRerankerScore,
       latency_ms: round1(latency), similarity: null, threshold: config.distanceThreshold,
       prompt, response: null, reason, tier: "guard", verified: 0, ...timings,
     });
@@ -514,7 +531,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
     if (neg) {
       const latency = performance.now() - started;
       db().recordEvent({
-        ts: new Date().toISOString(), status: "bypass", model: body.model, request_id: rid,
+        ts: new Date().toISOString(), status: "bypass", model: body.model, request_id: rid, reranker_score: ctx.lastRerankerScore,
         latency_ms: round1(latency), prompt,
         reason: `negative-cache (${neg.status}): ${neg.reason}`, tier: "domain",
       });
@@ -538,7 +555,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
       if (policy.mode === "strict") {
         const latency = performance.now() - started;
         db().recordEvent({
-          ts: new Date().toISOString(), status: "bypass", model: body.model, request_id: rid,
+          ts: new Date().toISOString(), status: "bypass", model: body.model, request_id: rid, reranker_score: ctx.lastRerankerScore,
           latency_ms: round1(latency), prompt,
           reason: `out of domain '${policy.name}': ${domain.reason}`,
           tier: "domain",
@@ -564,7 +581,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   if (det) {
     const latency = performance.now() - started;
     db().recordEvent({
-      ts: new Date().toISOString(), status: "deterministic-hit", model: config.model, request_id: rid,
+      ts: new Date().toISOString(), status: "deterministic-hit", model: config.model, request_id: rid, reranker_score: ctx.lastRerankerScore,
       latency_ms: round1(latency), prompt: det.prompt, response: det.answer,
       reason: `template ${det.templateId} answered by code, no model call`,
       tier: "deterministic", verified: 1,
@@ -578,6 +595,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
       response: mintResponse(det.response, { status: "miss" }),
       headers: {
         "x-cache-status": "deterministic-hit",
+        ...(ctx.lastRerankerScore != null ? { "x-cache-reranker-score": String(ctx.lastRerankerScore) } : {}),
         "x-request-id": rid,
         "x-cache-latency-ms": round1(latency).toFixed(1),
         "x-cache-policy": `deterministic:${det.templateId}`,
@@ -602,7 +620,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
       const latency = performance.now() - started;
       const payload = JSON.parse(existing.response_json);
       db().recordEvent({
-        ts: new Date().toISOString(), status: "exact-hit", model: body.model, request_id: rid,
+        ts: new Date().toISOString(), status: "exact-hit", model: body.model, request_id: rid, reranker_score: ctx.lastRerankerScore,
         latency_ms: round1(latency), similarity: 0, threshold: config.distanceThreshold,
         prompt: prompt || existing.prompt, response: answerText(payload),
         source_prompt: existing.prompt, reason: "byte-identical request",
@@ -616,6 +634,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
         response: mintResponse(payload, { status: "hit" }),
         headers: {
           "x-cache-status": "exact-hit",
+          ...(ctx.lastRerankerScore != null ? { "x-cache-reranker-score": String(ctx.lastRerankerScore) } : {}),
           "x-request-id": rid,
           "x-cache-latency-ms": round1(latency).toFixed(1),
           ...distanceHeaders(0),
@@ -642,7 +661,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
       const answer = composeAnswers(intents, resolved);
       const latency = performance.now() - started;
       db().recordEvent({
-        ts: new Date().toISOString(), status: "semantic-hit", model: body.model, request_id: rid,
+        ts: new Date().toISOString(), status: "semantic-hit", model: body.model, request_id: rid, reranker_score: ctx.lastRerankerScore,
         latency_ms: round1(latency), similarity: 0, threshold: config.distanceThreshold,
         prompt: prompt, response: answer,
         source_prompt: resolved.map((r) => r.prompt).join(" | "),
@@ -662,6 +681,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
         }, { status: "hit" }),
         headers: {
           "x-cache-status": "semantic-hit",
+          ...(ctx.lastRerankerScore != null ? { "x-cache-reranker-score": String(ctx.lastRerankerScore) } : {}),
           "x-request-id": rid,
           "x-cache-latency-ms": round1(latency).toFixed(1),
           ...distanceHeaders(0),
@@ -732,7 +752,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
             const latency = performance.now() - started;
             const dist = Number(cand.dist);
             db().recordEvent({
-              ts: new Date().toISOString(), status: "semantic-hit", model: body.model, request_id: rid,
+              ts: new Date().toISOString(), status: "semantic-hit", model: body.model, request_id: rid, reranker_score: ctx.lastRerankerScore,
               latency_ms: round1(latency), similarity: dist, threshold: config.distanceThreshold,
               prompt: prompt || row.prompt, response: answerText(payload),
               source_prompt: row.prompt, tier: "semantic", verified: 1,
@@ -746,6 +766,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
               response: mintResponse(payload, { status: "hit" }),
               headers: {
                 "x-cache-status": "semantic-hit",
+                ...(ctx.lastRerankerScore != null ? { "x-cache-reranker-score": String(ctx.lastRerankerScore) } : {}),
                 "x-request-id": rid,
                 "x-cache-latency-ms": round1(latency).toFixed(1),
                 ...distanceHeaders(dist),
@@ -922,7 +943,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   } catch (err) {
     const latency = performance.now() - started;
     db().recordEvent({
-      ts: new Date().toISOString(), status: "error", model: body?.model ?? config.model, request_id: rid,
+      ts: new Date().toISOString(), status: "error", model: body?.model ?? config.model, request_id: rid, reranker_score: ctx.lastRerankerScore,
       latency_ms: round1(latency), prompt, reason: err.message, tier: "miss",
       embed_ms: timings.embed_ms, redis_ms: timings.redis_ms,
     });
@@ -995,7 +1016,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
 
   const latency = performance.now() - started;
   db().recordEvent({
-    ts: new Date().toISOString(), status: "miss", model: body.model, request_id: rid,
+    ts: new Date().toISOString(), status: "miss", model: body.model, request_id: rid, reranker_score: ctx.lastRerankerScore,
     latency_ms: round1(latency), similarity: null, threshold: config.distanceThreshold,
     prompt, response: answerText(payload), tier: "miss",
     embed_ms: timings.embed_ms, redis_ms: timings.redis_ms, infer_ms: timings.infer_ms,
@@ -1018,6 +1039,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
     response: mintResponse(payload, { status: "miss" }),
     headers: {
       "x-cache-status": "miss",
+      ...(ctx.lastRerankerScore != null ? { "x-cache-reranker-score": String(ctx.lastRerankerScore) } : {}),
       "x-request-id": rid,
       "x-cache-latency-ms": round1(latency).toFixed(1),
       "x-embed-ms": timings.embed_ms != null ? String(timings.embed_ms) : "",
@@ -1119,6 +1141,7 @@ export function statsPayload({ breakdownDim } = {}) {
     embed_ms: e.embed_ms, redis_ms: e.redis_ms, prompt: e.prompt,
     response: e.response, source_prompt: e.source_prompt, reason: e.reason,
     request_id: e.request_id ?? null,
+    reranker_score: e.reranker_score ?? null,
   }));
   const lat = events.map((e) => Number(e.latency_ms)).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
   const requests = counters.requests || 0;
@@ -1144,6 +1167,7 @@ export function statsPayload({ breakdownDim } = {}) {
         // `node scripts/bench_cache.mjs`, not from this process
         coverage_thresholds: THRESHOLD_BY_ORIGIN,
         measured_fpr: { curated: null, deterministic_template: null, model: null },
+        reranker: rerankerInfo(),
       },
       store_breaker: storeBreaker.describe(),
       cache_entries: db().countEntries(),
@@ -1168,6 +1192,7 @@ export function statsPayload({ breakdownDim } = {}) {
       // #65: negative-cache refusals served without guard/model work.
       negative_hits: counters.negative_hits || 0,
       negative_entries: counters.negative_entries || 0,
+      reranker_rejections: counters.reranker_rejections || 0,
       // #66: cost saved is tokens_saved * price-per-token. Still an estimate.
       cost_saved_usd: Number(((counters.tokens_saved || 0) * config.costPerTokenUsd).toFixed(6)),
       cache_hit_rate: requests ? Number((hits / requests).toFixed(4)) : null,

@@ -74,7 +74,8 @@ CREATE TABLE IF NOT EXISTS events (
   reason       TEXT,
   tier         TEXT,
   verified     INTEGER,
-  request_id   TEXT
+  request_id   TEXT,
+  reranker_score REAL
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(id DESC);
 
@@ -123,6 +124,7 @@ const COUNTER_KEYS = [
   "requests", "exact_hits", "semantic_hits", "misses", "bypasses", "errors",
   "rejected_hits", "model_invocations", "tokens_saved", "model_spawns",
   "in_domain", "out_of_domain", "negative_hits", "negative_entries",
+  "reranker_rejections",
 ];
 
 export class Store {
@@ -144,6 +146,9 @@ export class Store {
     const cols = () => this.db.prepare("PRAGMA table_info(events)").all().map((r) => r.name);
     if (!cols().includes("request_id")) {
       this.db.exec("ALTER TABLE events ADD COLUMN request_id TEXT");
+    }
+    if (!cols().includes("reranker_score")) {
+      this.db.exec("ALTER TABLE events ADD COLUMN reranker_score REAL");
     }
   }
 
@@ -309,10 +314,10 @@ export class Store {
     const r = this.db.prepare(`
       INSERT INTO events
         (ts,status,model,similarity,threshold,latency_ms,embed_ms,redis_ms,infer_ms,
-         prompt,response,source_prompt,reason,tier,verified,request_id)
+         prompt,response,source_prompt,reason,tier,verified,request_id,reranker_score)
       VALUES (@ts,@status,@model,@similarity,@threshold,@latency_ms,@embed_ms,@redis_ms,
-              @infer_ms,@prompt,@response,@source_prompt,@reason,@tier,@verified,@request_id)
-    `).run({ request_id: null, ...evt });
+              @infer_ms,@prompt,@response,@source_prompt,@reason,@tier,@verified,@request_id,@reranker_score)
+    `).run({ request_id: null, reranker_score: null, ...evt });
     return Number(r.lastInsertRowid);
   }
 

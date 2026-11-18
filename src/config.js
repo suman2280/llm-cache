@@ -154,6 +154,12 @@ export const config = {
   // #63: max concurrent in-flight warm generations (bounded so warming does
   // not starve normal traffic on the single model slot).
   warmConcurrency: envInt("WARM_CONCURRENCY", 2),
+  // #64: optional cross-encoder reranker for semantic candidate verification.
+  // off (default) = unchanged behaviour; onnx = lazy cross-encoder.
+  verifierReranker: env("VERIFIER_RERANKER", "off"),
+  rerankerModel: env("RERANKER_MODEL", "Xenova/cross-encoder-mmini-lm-L6-v2"),
+  rerankerThreshold: envFloat("RERANKER_THRESHOLD", 0.5),
+  rerankerIdleS: envInt("RERANKER_IDLE_S", 300),
   // #37: declared target false-positive rate. Coverage thresholds are
   // provenance-dependent (see THRESHOLD_BY_ORIGIN in cache.js); the measured
   // operating point comes from scripts/bench_cache.mjs.
