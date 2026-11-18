@@ -37,6 +37,7 @@ import { DomainPolicy, OPEN_POLICY } from "./domain.js";
 import { coverageVerdict } from "./lexicon.js";
 import { storeBreaker } from "./breaker.js";
 import { inferenceLimiter } from "./ratelimit.js";
+import { configureNegativeCache, clearNegativeCache, rememberNegative, lookupNegative } from "./negative_cache.js";
 import { splitIntents } from "./intents.js";
 import { retrieve, groundRequest, PREFILL, assembleAnswer } from "./knowledge.js";
 import { detectDegeneracy } from "./degenerate.js";
@@ -79,7 +80,14 @@ async function ensureVectorsPopulated() {
 }
 
 /** Mark the vector index dirty after an external SQLite write. */
-export function invalidateVectorCache() { vectorsChecked = false; }
+export function invalidateVectorCache() {
+  vectorsChecked = false;
+  // #65: a corpus/KB change must not leave stale refusals behind.
+  clearNegativeCache();
+}
+
+// #65: short-lived negative cache for out-of-domain refusals.
+configureNegativeCache({ ttlS: config.negativeCacheTtlS });
 
 /**
  * The domain policy, built from the corpus's DOMAIN descriptor.
@@ -95,6 +103,8 @@ export function invalidateVectorCache() { vectorsChecked = false; }
  * able to resurface later as a "semantic hit" for something else.
  */
 let _policy = null;
+/** Test seam: drop the memoized domain policy (config may have changed). */
+export function resetPolicy() { _policy = null; }
 export async function getPolicy() {
   if (_policy) return _policy;
   if (!config.domainMode || config.domainMode === "off") {
@@ -223,6 +233,18 @@ function answerText(payload) {
   } catch {
     return null;
   }
+}
+
+// #65: one source of truth for the out-of-domain refusal, so a negative-cache
+// hit is byte-identical to a fresh classification refusal.
+function domainRefusalError(policy, reason) {
+  const err = new Error(
+    `This assistant only answers questions about ${policy.description}. ` +
+    `Your question was not recognised as being in that domain (${reason}).`
+  );
+  err.statusCode = 422;
+  err.public = true;
+  return err;
 }
 
 function mintResponse(payload, { status }) {
@@ -483,6 +505,25 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
     throw err;
   }
 
+  // ---- negative cache (#65) --------------------------------------------
+  // A remembered out-of-domain refusal is replayed before the classifier's
+  // expensive path. It can only contain questions the guard itself refused on
+  // write, and entries expire / are cleared on KB changes.
+  if (policy.mode !== "off" && config.negativeCacheTtlS > 0) {
+    const neg = await lookupNegative(prompt || semText);
+    if (neg) {
+      const latency = performance.now() - started;
+      db().recordEvent({
+        ts: new Date().toISOString(), status: "bypass", model: body.model, request_id: rid,
+        latency_ms: round1(latency), prompt,
+        reason: `negative-cache (${neg.status}): ${neg.reason}`, tier: "domain",
+      });
+      db().increment(["requests", "bypasses", "out_of_domain", "negative_hits"]);
+      noteOutcome("out-of-domain", 0, latency);
+      throw domainRefusalError(policy, neg.reason);
+    }
+  }
+
   // ---- domain guard ----------------------------------------------------
   // The fine-tune's model card promises it refuses out-of-domain questions
   // ("100% correct refusal"). Measured, it does not: 0 of 6 out-of-scope
@@ -504,13 +545,9 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
         });
         db().increment(["requests", "bypasses", "out_of_domain"]);
         noteOutcome("out-of-domain", 0, latency);
-        const err = new Error(
-          `This assistant only answers questions about ${policy.description}. ` +
-          `Your question was not recognised as being in that domain (${domain.reason}).`
-        );
-        err.statusCode = 422;
-        err.public = true;
-        throw err;
+        db().increment("negative_entries");
+        rememberNegative(prompt || semText, "out-of-domain", domain.reason).catch(() => {});
+        throw domainRefusalError(policy, domain.reason);
       }
       // mode === "bypass": fall through to inference, but never cache it.
       ctx.outOfDomain = domain;
@@ -968,6 +1005,12 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   });
   db().increment(["requests", "misses", "model_invocations"]);
   noteOutcome("miss", 0, latency);
+  // #65: remember ungrounded verdicts too (observability; never replayed as a
+  // refusal -- the question still needs an answer).
+  if (failure?.kind === "ungrounded" && config.negativeCacheTtlS > 0) {
+    db().increment("negative_entries");
+    rememberNegative(prompt || semText, "ungrounded", failure.reason).catch(() => {});
+  }
   if (ctx.outOfDomain) db().increment(["out_of_domain"]);
 
   return {
@@ -1122,6 +1165,7 @@ export function statsPayload({ breakdownDim } = {}) {
       tokens_saved: counters.tokens_saved || 0,
       // #65: negative-cache refusals served without guard/model work.
       negative_hits: counters.negative_hits || 0,
+      negative_entries: counters.negative_entries || 0,
       // #66: cost saved is tokens_saved * price-per-token. Still an estimate.
       cost_saved_usd: Number(((counters.tokens_saved || 0) * config.costPerTokenUsd).toFixed(6)),
       cache_hit_rate: requests ? Number((hits / requests).toFixed(4)) : null,
