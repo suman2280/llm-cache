@@ -144,6 +144,13 @@ export const config = {
   maxEntries: envInt("MAX_ENTRIES", 5000),
   // R-17: a hit has no `usage` object, so tokens saved are estimated.
   estimatedTokensPerAnswer: envInt("ESTIMATED_TOKENS_PER_ANSWER", 250),
+  // #66: cost-saved ESTIMATE = tokens_saved * price-per-token (USD). Not a
+  // measured bill -- a hit has no `usage` object. Tune to your own pricing.
+  costPerTokenUsd: envFloat("COST_PER_TOKEN_USD", 0.000002),
+  // #66: max rows returned per /stats breakdown dimension.
+  breakdownLimit: envInt("BREAKDOWN_LIMIT", 10),
+  // #65: how long a negative (refusal/ungrounded) verdict is remembered, 0=off.
+  negativeCacheTtlS: envInt("NEGATIVE_CACHE_TTL_S", 300),
   // #37: declared target false-positive rate. Coverage thresholds are
   // provenance-dependent (see THRESHOLD_BY_ORIGIN in cache.js); the measured
   // operating point comes from scripts/bench_cache.mjs.

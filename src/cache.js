@@ -391,8 +391,10 @@ function deterministicTier(envelope) {
 // The main entry point
 
 export async function handleChat(body, { envelopeHeader = "", role = "author", maxTokens,
-  requireGrounded = false, trusted = false, clientId = "local" } = {}) {
+  requireGrounded = false, trusted = false, clientId = "local", requestId } = {}) {
   const started = performance.now();
+  // #66: a trace id minted by the HTTP layer (or here for direct callers).
+  const rid = requestId || `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   // #41: normalize answer-affecting params before keying and inference, so a
   // huge max_tokens cannot bypass the ceiling by being hashed verbatim.
   if (body && typeof body === "object" && body.max_tokens !== undefined) {
@@ -430,20 +432,35 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
     fingerprint,
     trusted,
     clientId,
+    requestId: rid,
     // The content path is strict: an ungrounded answer may not become content.
     // The chat path serves it labelled and uncached.
     requireGrounded,
   };
   const timings = { embed_ms: null, redis_ms: null, infer_ms: null };
 
+  // #66: one outcome row per request, for bounded-cardinality breakdowns.
+  const noteOutcome = (status, savedTokens = 0, latency = performance.now() - started) => {
+    try {
+      db().recordOutcome({
+        ts: new Date().toISOString(), status, scope,
+        concept_id: envelope?.concept_id ?? null,
+        template_id: envelope?.template_id ?? null,
+        generation_method: envelope?.generation_method ?? "model",
+        tokens_saved: savedTokens, latency_ms: round1(latency), request_id: rid,
+      });
+    } catch { /* never let observability fail a response */ }
+  };
+
   const reject = async (status, reason) => {
     const latency = performance.now() - started;
     db().recordEvent({
-      ts: new Date().toISOString(), status, model: body?.model ?? config.model,
+      ts: new Date().toISOString(), status, model: body?.model ?? config.model, request_id: rid,
       latency_ms: round1(latency), similarity: null, threshold: config.distanceThreshold,
       prompt, response: null, reason, tier: "guard", verified: 0, ...timings,
     });
     db().increment(["requests", "errors"]);
+    noteOutcome("error", 0, latency);
     const err = new Error(reason);
     err.statusCode = 400;
     err.public = true;
@@ -457,11 +474,12 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   if (body.stream) {
     // Non-streaming only. Say so clearly rather than silently buffering.
     db().recordEvent({
-      ts: new Date().toISOString(), status: "bypass", model: body.model,
+      ts: new Date().toISOString(), status: "bypass", model: body.model, request_id: rid,
       latency_ms: round1(performance.now() - started), prompt,
       reason: "stream=true is not supported by the cache; send stream=false", tier: "guard",
     });
     db().increment(["requests", "bypasses"]);
+    noteOutcome("bypass");
     const err = new Error("stream=true is not supported by the cache; send stream=false");
     err.statusCode = 400;
     err.public = true;
@@ -482,12 +500,13 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
       if (policy.mode === "strict") {
         const latency = performance.now() - started;
         db().recordEvent({
-          ts: new Date().toISOString(), status: "bypass", model: body.model,
+          ts: new Date().toISOString(), status: "bypass", model: body.model, request_id: rid,
           latency_ms: round1(latency), prompt,
           reason: `out of domain '${policy.name}': ${domain.reason}`,
           tier: "domain",
         });
         db().increment(["requests", "bypasses", "out_of_domain"]);
+        noteOutcome("out-of-domain", 0, latency);
         const err = new Error(
           `This assistant only answers questions about ${policy.description}. ` +
           `Your question was not recognised as being in that domain (${domain.reason}).`
@@ -511,7 +530,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   if (det) {
     const latency = performance.now() - started;
     db().recordEvent({
-      ts: new Date().toISOString(), status: "deterministic-hit", model: config.model,
+      ts: new Date().toISOString(), status: "deterministic-hit", model: config.model, request_id: rid,
       latency_ms: round1(latency), prompt: det.prompt, response: det.answer,
       reason: `template ${det.templateId} answered by code, no model call`,
       tier: "deterministic", verified: 1,
@@ -519,11 +538,13 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
     // Tier 0 is computed in CODE -- no model was invoked. Counting it here
     // understated the project's own "inferences avoided" metric.
     db().increment(["requests", "exact_hits"]);
+    noteOutcome("deterministic-hit", config.estimatedTokensPerAnswer, latency);
     return {
       status: "deterministic-hit", tier: "deterministic",
       response: mintResponse(det.response, { status: "miss" }),
       headers: {
         "x-cache-status": "deterministic-hit",
+        "x-request-id": rid,
         "x-cache-latency-ms": round1(latency).toFixed(1),
         "x-cache-policy": `deterministic:${det.templateId}`,
         ...distanceHeaders(0),
@@ -547,7 +568,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
       const latency = performance.now() - started;
       const payload = JSON.parse(existing.response_json);
       db().recordEvent({
-        ts: new Date().toISOString(), status: "exact-hit", model: body.model,
+        ts: new Date().toISOString(), status: "exact-hit", model: body.model, request_id: rid,
         latency_ms: round1(latency), similarity: 0, threshold: config.distanceThreshold,
         prompt: prompt || existing.prompt, response: answerText(payload),
         source_prompt: existing.prompt, reason: "byte-identical request",
@@ -555,11 +576,13 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
       });
       db().increment(["requests", "exact_hits"]);
       db().increment("tokens_saved", config.estimatedTokensPerAnswer);
+      noteOutcome("exact-hit", config.estimatedTokensPerAnswer, latency);
       return {
         status: "exact-hit", tier: "exact",
         response: mintResponse(payload, { status: "hit" }),
         headers: {
           "x-cache-status": "exact-hit",
+          "x-request-id": rid,
           "x-cache-latency-ms": round1(latency).toFixed(1),
           ...distanceHeaders(0),
           "x-cache-source-prompt": asciiHeaderValue(existing.prompt),
@@ -585,7 +608,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
       const answer = composeAnswers(intents, resolved);
       const latency = performance.now() - started;
       db().recordEvent({
-        ts: new Date().toISOString(), status: "semantic-hit", model: body.model,
+        ts: new Date().toISOString(), status: "semantic-hit", model: body.model, request_id: rid,
         latency_ms: round1(latency), similarity: 0, threshold: config.distanceThreshold,
         prompt: prompt, response: answer,
         source_prompt: resolved.map((r) => r.prompt).join(" | "),
@@ -595,6 +618,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
       });
       db().increment(["requests", "semantic_hits"]);
       db().increment("tokens_saved", config.estimatedTokensPerAnswer);
+      noteOutcome("semantic-hit", config.estimatedTokensPerAnswer, latency);
       return {
         status: "semantic-hit", tier: "semantic",
         response: mintResponse({
@@ -604,6 +628,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
         }, { status: "hit" }),
         headers: {
           "x-cache-status": "semantic-hit",
+          "x-request-id": rid,
           "x-cache-latency-ms": round1(latency).toFixed(1),
           ...distanceHeaders(0),
           "x-cache-source-prompt": asciiHeaderValue(resolved.map((r) => r.prompt).join(" | ")),
@@ -673,18 +698,21 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
             const latency = performance.now() - started;
             const dist = Number(cand.dist);
             db().recordEvent({
-              ts: new Date().toISOString(), status: "semantic-hit", model: body.model,
+              ts: new Date().toISOString(), status: "semantic-hit", model: body.model, request_id: rid,
               latency_ms: round1(latency), similarity: dist, threshold: config.distanceThreshold,
               prompt: prompt || row.prompt, response: answerText(payload),
               source_prompt: row.prompt, tier: "semantic", verified: 1,
               embed_ms: timings.embed_ms, redis_ms: timings.redis_ms,
             });
             db().increment(["requests", "semantic_hits"]);
+            db().increment("tokens_saved", config.estimatedTokensPerAnswer);
+            noteOutcome("semantic-hit", config.estimatedTokensPerAnswer, latency);
             return {
               status: "semantic-hit", tier: "semantic",
               response: mintResponse(payload, { status: "hit" }),
               headers: {
                 "x-cache-status": "semantic-hit",
+                "x-request-id": rid,
                 "x-cache-latency-ms": round1(latency).toFixed(1),
                 ...distanceHeaders(dist),
                 "x-cache-source-prompt": asciiHeaderValue(row.prompt),
@@ -852,11 +880,12 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
   } catch (err) {
     const latency = performance.now() - started;
     db().recordEvent({
-      ts: new Date().toISOString(), status: "error", model: body?.model ?? config.model,
+      ts: new Date().toISOString(), status: "error", model: body?.model ?? config.model, request_id: rid,
       latency_ms: round1(latency), prompt, reason: err.message, tier: "miss",
       embed_ms: timings.embed_ms, redis_ms: timings.redis_ms,
     });
     db().increment(["requests", "errors"]);
+    noteOutcome("error", 0, latency);
     const e = new Error(err.public ? err.message : `inference failed: ${err.message}`);
     e.statusCode = err.statusCode ?? 502;
     e.public = true;
@@ -924,7 +953,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
 
   const latency = performance.now() - started;
   db().recordEvent({
-    ts: new Date().toISOString(), status: "miss", model: body.model,
+    ts: new Date().toISOString(), status: "miss", model: body.model, request_id: rid,
     latency_ms: round1(latency), similarity: null, threshold: config.distanceThreshold,
     prompt, response: answerText(payload), tier: "miss",
     embed_ms: timings.embed_ms, redis_ms: timings.redis_ms, infer_ms: timings.infer_ms,
@@ -933,6 +962,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
       : (groundingUsed ? `grounded on ${groundingUsed} reference chunk(s)` : null),
   });
   db().increment(["requests", "misses", "model_invocations"]);
+  noteOutcome("miss", 0, latency);
   if (ctx.outOfDomain) db().increment(["out_of_domain"]);
 
   return {
@@ -940,6 +970,7 @@ export async function handleChat(body, { envelopeHeader = "", role = "author", m
     response: mintResponse(payload, { status: "miss" }),
     headers: {
       "x-cache-status": "miss",
+      "x-request-id": rid,
       "x-cache-latency-ms": round1(latency).toFixed(1),
       "x-embed-ms": timings.embed_ms != null ? String(timings.embed_ms) : "",
       "x-redis-ms": timings.redis_ms != null ? String(timings.redis_ms) : "",
@@ -1032,13 +1063,14 @@ function percentile(sorted, p) {
 }
 const round1 = (v) => Math.round((Number(v) + Number.EPSILON) * 10) / 10;
 
-export function statsPayload() {
+export function statsPayload({ breakdownDim } = {}) {
   const counters = db().counters();
   const events = db().recentEvents(config.statsEventLimit).map((e) => ({
     id: Number(e.id), ts: e.ts, status: e.status, model: e.model,
     similarity: e.similarity, threshold: e.threshold, latency_ms: e.latency_ms,
     embed_ms: e.embed_ms, redis_ms: e.redis_ms, prompt: e.prompt,
     response: e.response, source_prompt: e.source_prompt, reason: e.reason,
+    request_id: e.request_id ?? null,
   }));
   const lat = events.map((e) => Number(e.latency_ms)).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
   const requests = counters.requests || 0;
@@ -1083,6 +1115,10 @@ export function statsPayload() {
       model_invocations: counters.model_invocations || 0,
       // R-17: an ESTIMATE, not a measurement -- a hit has no `usage` object.
       tokens_saved: counters.tokens_saved || 0,
+      // #65: negative-cache refusals served without guard/model work.
+      negative_hits: counters.negative_hits || 0,
+      // #66: cost saved is tokens_saved * price-per-token. Still an estimate.
+      cost_saved_usd: Number(((counters.tokens_saved || 0) * config.costPerTokenUsd).toFixed(6)),
       cache_hit_rate: requests ? Number((hits / requests).toFixed(4)) : null,
     },
     latency_ms: {
@@ -1094,6 +1130,22 @@ export function statsPayload() {
       mean: lat.length ? round1(lat.reduce((a, b) => a + b, 0) / lat.length) : 0,
       max: lat.length ? round1(lat[lat.length - 1]) : 0,
     },
+    // #66: additive fine-grained observability. Never read by the frozen UI.
+    breakdown: {
+      dimensions: ["scope", "concept_id", "template_id", "generation_method"],
+      ...(breakdownDim
+        ? { requested: breakdownDim, top: db().breakdown(breakdownDim, { limit: config.breakdownLimit }) }
+        : {
+          scope: db().breakdown("scope", { limit: config.breakdownLimit }),
+          template_id: db().breakdown("template_id", { limit: config.breakdownLimit }),
+          concept_id: db().breakdown("concept_id", { limit: config.breakdownLimit }),
+          generation_method: db().breakdown("generation_method", { limit: config.breakdownLimit }),
+        }),
+      totals: db().outcomeTotals(),
+    },
+    // #66: trace id is emitted on the response header x-request-id (set by
+    // the HTTP layer); this is the id stamped on the most recent event.
+    request_id: events.length ? events[0].request_id : null,
     recent: events,
   };
 }

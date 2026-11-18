@@ -73,9 +73,27 @@ CREATE TABLE IF NOT EXISTS events (
   source_prompt TEXT,
   reason       TEXT,
   tier         TEXT,
-  verified     INTEGER
+  verified     INTEGER,
+  request_id   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(id DESC);
+
+-- #66: one outcome row per request, used for per-scope/template/concept
+-- breakdowns and cost-saved attribution. Bounded-cardinality dimensions only.
+CREATE TABLE IF NOT EXISTS outcomes (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts           TEXT    NOT NULL,
+  status       TEXT    NOT NULL,
+  scope        TEXT,
+  concept_id   TEXT,
+  template_id  TEXT,
+  generation_method TEXT,
+  tokens_saved INTEGER NOT NULL DEFAULT 0,
+  latency_ms   REAL    NOT NULL DEFAULT 0,
+  request_id   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_outcomes_status ON outcomes(status);
+CREATE INDEX IF NOT EXISTS idx_outcomes_scope ON outcomes(scope);
 
 -- #38: an auditable review trail. Promoting to "production" requires two
 -- distinct approvers, so no single caller can release content alone.
@@ -98,7 +116,7 @@ CREATE TABLE IF NOT EXISTS counters (
 const COUNTER_KEYS = [
   "requests", "exact_hits", "semantic_hits", "misses", "bypasses", "errors",
   "rejected_hits", "model_invocations", "tokens_saved", "model_spawns",
-  "in_domain", "out_of_domain",
+  "in_domain", "out_of_domain", "negative_hits", "negative_entries",
 ];
 
 export class Store {
@@ -109,8 +127,17 @@ export class Store {
     this.db.exec("PRAGMA synchronous=NORMAL");
     this.db.exec("PRAGMA foreign_keys=ON");
     this.db.exec(SCHEMA);
+    this._migrate();
     for (const k of COUNTER_KEYS) {
       this.db.prepare("INSERT OR IGNORE INTO counters(name,value) VALUES (?,0)").run(k);
+    }
+  }
+
+  /** Additive columns added after v0.2 -- keep older SQLite files working. */
+  _migrate() {
+    const cols = () => this.db.prepare("PRAGMA table_info(events)").all().map((r) => r.name);
+    if (!cols().includes("request_id")) {
+      this.db.exec("ALTER TABLE events ADD COLUMN request_id TEXT");
     }
   }
 
@@ -276,11 +303,64 @@ export class Store {
     const r = this.db.prepare(`
       INSERT INTO events
         (ts,status,model,similarity,threshold,latency_ms,embed_ms,redis_ms,infer_ms,
-         prompt,response,source_prompt,reason,tier,verified)
+         prompt,response,source_prompt,reason,tier,verified,request_id)
       VALUES (@ts,@status,@model,@similarity,@threshold,@latency_ms,@embed_ms,@redis_ms,
-              @infer_ms,@prompt,@response,@source_prompt,@reason,@tier,@verified)
-    `).run(evt);
+              @infer_ms,@prompt,@response,@source_prompt,@reason,@tier,@verified,@request_id)
+    `).run({ request_id: null, ...evt });
     return Number(r.lastInsertRowid);
+  }
+
+  // ------------------------------------------------------------- outcomes (#66)
+
+  /** #66: record a request outcome for breakdowns and cost-saved attribution. */
+  recordOutcome(o) {
+    return this.db.prepare(`
+      INSERT INTO outcomes
+        (ts,status,scope,concept_id,template_id,generation_method,tokens_saved,latency_ms,request_id)
+      VALUES (@ts,@status,@scope,@concept_id,@template_id,@generation_method,
+              @tokens_saved,@latency_ms,@request_id)
+    `).run({
+      scope: null, concept_id: null, template_id: null, generation_method: null,
+      tokens_saved: 0, latency_ms: 0, request_id: null, ...o,
+    });
+  }
+
+  /**
+   * #66: top-N breakdown along one bounded dimension.
+   * Returns [{ key, requests, hits, misses, rejects, tokens_saved }].
+   */
+  breakdown(dim, { limit = 10 } = {}) {
+    const allowed = { scope: "scope", concept_id: "concept_id", template_id: "template_id", generation_method: "generation_method" };
+    const col = allowed[dim];
+    if (!col) return [];
+    return this.db.prepare(`
+      SELECT ${col} AS key,
+             COUNT(*) AS requests,
+             SUM(CASE WHEN status IN ('exact-hit','semantic-hit','deterministic-hit') THEN 1 ELSE 0 END) AS hits,
+             SUM(CASE WHEN status = 'miss' THEN 1 ELSE 0 END) AS misses,
+             SUM(CASE WHEN status IN ('rejected','semantic-hit-rejected') THEN 1 ELSE 0 END) AS rejects,
+             SUM(tokens_saved) AS tokens_saved
+      FROM outcomes
+      WHERE ${col} IS NOT NULL AND ${col} != ''
+      GROUP BY ${col}
+      ORDER BY hits DESC, requests DESC, key ASC
+      LIMIT ?
+    `).all(limit).map((r) => ({ ...r, key: String(r.key), requests: Number(r.requests),
+      hits: Number(r.hits), misses: Number(r.misses), rejects: Number(r.rejects),
+      tokens_saved: Number(r.tokens_saved) }));
+  }
+
+  /** Aggregate totals over all outcomes (for /metrics cost-saved gauges). */
+  outcomeTotals() {
+    const r = this.db.prepare(`
+      SELECT COUNT(*) AS requests,
+             SUM(CASE WHEN status IN ('exact-hit','semantic-hit','deterministic-hit') THEN 1 ELSE 0 END) AS hits,
+             SUM(CASE WHEN status = 'miss' THEN 1 ELSE 0 END) AS misses,
+             SUM(tokens_saved) AS tokens_saved
+      FROM outcomes
+    `).get();
+    return { requests: Number(r.requests) || 0, hits: Number(r.hits) || 0,
+      misses: Number(r.misses) || 0, tokens_saved: Number(r.tokens_saved) || 0 };
   }
 
   recentEvents(limit) {
@@ -312,6 +392,7 @@ export class Store {
   /** Clears counters + events; the event id sequence deliberately survives. */
   resetStats() {
     this.db.exec("DELETE FROM events");
+    this.db.exec("DELETE FROM outcomes");
     for (const k of COUNTER_KEYS) {
       this.db.prepare("UPDATE counters SET value = 0 WHERE name = ?").run(k);
     }

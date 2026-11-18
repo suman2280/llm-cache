@@ -7,7 +7,7 @@
  * concept_id / asset_type / template and get a governed answer back.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join, normalize } from "node:path";
 import Fastify from "fastify";
@@ -23,6 +23,8 @@ import { isLoaded as embedderLoaded } from "./embedder.js";
 import { retrieve } from "./knowledge.js";
 
 function hash(v) { return createHash("sha256").update(v, "utf8").digest("hex").slice(0, 12); }
+// Escape a value for use inside a Prometheus label string.
+function escMetric(v) { return String(v ?? "").replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").slice(0, 128); }
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -35,6 +37,13 @@ const MIME = {
 export async function build() {
   model.registerCleanup();
   const app = Fastify({ logger: false, bodyLimit: 8 * 1024 * 1024 });
+
+  // #66: a trace id on EVERY response (including errors and static files).
+  // Set in onRequest so it is present even when a handler throws.
+  app.addHook("onRequest", async (req, reply) => {
+    req.requestId = randomUUID();
+    reply.header("x-request-id", req.requestId);
+  });
 
   // ---- static dashboard (same origin: no CORS surface) ----------------
   // A hand-rolled handler for 5 files: no extra dependency, no virtual
@@ -120,7 +129,7 @@ export async function build() {
     try {
       const out = await cache.handleChat(req.body, {
         envelopeHeader, role, maxTokens: req.body?.max_tokens,
-        trusted, clientId,
+        trusted, clientId, requestId: req.requestId,
       });
       reply.headers(out.headers);
       return out.response;
@@ -165,7 +174,10 @@ export async function build() {
   }));
 
   // ---- /stats (the frozen UI's contract) -------------------------------
-  app.get("/stats", async () => cache.statsPayload());
+  // #66: optional ?breakdown=scope|concept_id|template_id|generation_method
+  // narrows the additive `breakdown` object; with no query all dimensions are
+  // returned. The frozen fields are unchanged.
+  app.get("/stats", async (req) => cache.statsPayload({ breakdownDim: req.query?.breakdown }));
 
   /**
    * R-17: Prometheus-format metrics. The dashboard's /stats is the JSON
@@ -204,6 +216,19 @@ export async function build() {
       "# HELP llm_cache_tokens_saved_estimate Estimated completion tokens avoided (not measured).",
       "# TYPE llm_cache_tokens_saved_estimate counter",
       `llm_cache_tokens_saved_estimate ${t.tokens_saved || 0}`,
+      "# HELP llm_cache_cost_saved_usd_estimate Estimated USD avoided (tokens_saved * price/token).",
+      "# TYPE llm_cache_cost_saved_usd_estimate gauge",
+      `llm_cache_cost_saved_usd_estimate ${t.cost_saved_usd || 0}`,
+      // #66: bounded-cardinality breakdown gauges (top-N per dimension).
+      "# HELP llm_cache_hits_by_scope Cache hits by scope (top N, bounded cardinality).",
+      "# TYPE llm_cache_hits_by_scope gauge",
+      ...d.breakdown.scope.map((r) => `llm_cache_hits_by_scope{scope="${escMetric(r.key)}"} ${r.hits}`),
+      "# HELP llm_cache_hits_by_template Cache hits by template (top N, bounded cardinality).",
+      "# TYPE llm_cache_hits_by_template gauge",
+      ...d.breakdown.template_id.map((r) => `llm_cache_hits_by_template{template_id="${escMetric(r.key)}"} ${r.hits}`),
+      "# HELP llm_cache_negative_hits_total Refusals served from the negative cache.",
+      "# TYPE llm_cache_negative_hits_total counter",
+      `llm_cache_negative_hits_total ${t.negative_hits || 0}`,
       "# HELP llm_cache_entries Cached documents.",
       "# TYPE llm_cache_entries gauge",
       `llm_cache_entries ${d.service.cache_entries || 0}`,
@@ -325,7 +350,7 @@ export async function build() {
       }
       const out = await cache.handleChat(body, {
         envelopeHeader: encodeEnvelope(full), role, maxTokens: 400,
-        requireGrounded: true, trusted, clientId,
+        requireGrounded: true, trusted, clientId, requestId: req.requestId,
       });
       const seededChunks = await retrieve(rendered.prompt, 3).catch(() => []);
       db().insertEntry({
@@ -379,7 +404,7 @@ export async function build() {
     // answer is an error here, never a 200 with "needs_verification".
     const out = await cache.handleChat(body, {
       envelopeHeader: encodeEnvelope(full), role, maxTokens: body.max_tokens,
-      requireGrounded: true, trusted, clientId,
+      requireGrounded: true, trusted, clientId, requestId: req.requestId,
     });
     return {
       asset_type: full.asset_type, concept_id: full.concept_id, chapter_code: full.chapter_code,
